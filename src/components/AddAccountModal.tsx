@@ -58,7 +58,7 @@ export function AddAccountModal({
     try {
       setLoading(true);
       setError(null);
-      const info = await onStartOAuth(name);
+      const info = await onStartOAuth(name.trim());
       setAuthUrl(info.auth_url);
       setOauthPending(true);
       setLoading(false);
@@ -91,7 +91,7 @@ export function AddAccountModal({
     try {
       setLoading(true);
       setError(null);
-      await onImportFile(fileSource, name);
+      await onImportFile(fileSource, name.trim());
       handleClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));

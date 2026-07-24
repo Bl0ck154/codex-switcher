@@ -101,9 +101,8 @@ impl StoredAccount {
         account_id: Option<&String>,
         kind: &str,
     ) -> String {
-        let name = name.trim();
-        if !name.is_empty() {
-            return name.to_string();
+        if !name.trim().is_empty() {
+            return name;
         }
         if let Some(email) = email.filter(|email| !email.trim().is_empty()) {
             return email.clone();
@@ -188,7 +187,7 @@ mod account_name_tests {
     }
 
     #[test]
-    fn explicit_name_is_trimmed() {
+    fn explicit_name_is_preserved() {
         let account = StoredAccount::new_chatgpt(
             "  My Account  ".into(),
             Some("user@example.com".into()),
@@ -199,7 +198,7 @@ mod account_name_tests {
             "refresh".into(),
             None,
         );
-        assert_eq!(account.name, "My Account");
+        assert_eq!(account.name, "  My Account  ");
     }
 
     #[test]
