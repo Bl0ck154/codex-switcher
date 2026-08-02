@@ -149,15 +149,24 @@ pub fn add_account(account: StoredAccount, overwrite_existing: bool) -> Result<S
 #[cfg(test)]
 mod tests {
     use super::insert_or_replace_account;
-    use crate::types::{AccountsStore, StoredAccount};
+    use crate::types::{AccountsStore, AuthData, StoredAccount};
 
-    fn account(name: &str, key: &str) -> StoredAccount {
-        StoredAccount::new_api_key(name.to_string(), key.to_string())
+    fn account(name: &str, token_suffix: &str) -> StoredAccount {
+        StoredAccount::new_chatgpt(
+            name.to_string(),
+            Some(format!("{token_suffix}@example.com")),
+            Some("plus".to_string()),
+            None,
+            format!("id-{token_suffix}"),
+            format!("access-{token_suffix}"),
+            format!("refresh-{token_suffix}"),
+            Some(format!("account-{token_suffix}")),
+        )
     }
 
     #[test]
     fn duplicate_name_is_rejected_without_explicit_overwrite() {
-        let existing = account("Work", "old-key");
+        let existing = account("Work", "old");
         let mut store = AccountsStore {
             accounts: vec![existing.clone()],
             active_account_id: Some(existing.id.clone()),
@@ -165,7 +174,7 @@ mod tests {
             ..AccountsStore::default()
         };
 
-        let error = insert_or_replace_account(&mut store, account("Work", "new-key"), false)
+        let error = insert_or_replace_account(&mut store, account("Work", "new"), false)
             .expect_err("duplicate name should require confirmation");
 
         assert!(error.to_string().contains("already exists"));
@@ -175,7 +184,7 @@ mod tests {
 
     #[test]
     fn explicit_overwrite_preserves_local_account_identity() {
-        let mut existing = account("Work", "old-key");
+        let mut existing = account("Work", "old");
         existing.last_used_at = Some(chrono::Utc::now());
         let existing_id = existing.id.clone();
         let existing_created_at = existing.created_at;
@@ -187,7 +196,7 @@ mod tests {
             ..AccountsStore::default()
         };
 
-        let replacement = insert_or_replace_account(&mut store, account("Work", "new-key"), true)
+        let replacement = insert_or_replace_account(&mut store, account("Work", "new"), true)
             .expect("confirmed replacement should succeed");
 
         assert_eq!(store.accounts.len(), 1);
@@ -199,9 +208,17 @@ mod tests {
             Some(existing_id.as_str())
         );
         assert_eq!(store.masked_account_ids, vec![existing_id]);
+        assert_eq!(replacement.email.as_deref(), Some("new@example.com"));
         match replacement.auth_data {
-            crate::types::AuthData::ApiKey { key } => assert_eq!(key, "new-key"),
-            _ => panic!("expected API key account"),
+            AuthData::ChatGPT {
+                access_token,
+                refresh_token,
+                ..
+            } => {
+                assert_eq!(access_token, "access-new");
+                assert_eq!(refresh_token, "refresh-new");
+            }
+            _ => panic!("expected ChatGPT account"),
         }
     }
 }
