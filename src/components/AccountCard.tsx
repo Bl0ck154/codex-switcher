@@ -155,11 +155,16 @@ export function AccountCard({
     }
   }, [isEditing]);
 
+  useEffect(() => {
+    if (account.usage && !account.usage.error) {
+      setLastRefresh(new Date());
+    }
+  }, [account.usage]);
+
   const handleRefresh = async () => {
     setIsRefreshing(true);
     try {
       await onRefresh();
-      setLastRefresh(new Date());
     } finally {
       setIsRefreshing(false);
     }
