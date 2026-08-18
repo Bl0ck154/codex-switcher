@@ -230,6 +230,7 @@ function App() {
   const [timedWarmupDraft, setTimedWarmupDraft] = useState("");
   const [maskedAccounts, setMaskedAccounts] = useState<Set<string>>(new Set());
   const [accountSearchQuery, setAccountSearchQuery] = useState("");
+  const [isAccountSearchOpen, setIsAccountSearchOpen] = useState(false);
   const isAccountSearchEnabled = accounts.length >= ACCOUNT_SEARCH_THRESHOLD;
   const [otherAccountsSort, setOtherAccountsSort] = useState<
     | "deadline_asc"
@@ -240,8 +241,9 @@ function App() {
     | "subscription_desc"
   >("deadline_asc");
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
+  const [isNavMenuOpen, setIsNavMenuOpen] = useState(false);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
-  const timedWarmupRef = useRef<HTMLDivElement | null>(null);
+  const navMenuRef = useRef<HTMLDivElement | null>(null);
   const [themeMode, setThemeMode] = useState<ThemeMode>(readStoredTheme);
   const [isWindowMaximized, setIsWindowMaximized] = useState(false);
   const [closeBehaviorPromptOpen, setCloseBehaviorPromptOpen] = useState(false);
@@ -448,11 +450,25 @@ function App() {
   }, [isActionsMenuOpen]);
 
   useEffect(() => {
+    if (!isNavMenuOpen) return;
+
+    const handleClickOutside = (event: MouseEvent) => {
+      if (!navMenuRef.current) return;
+      if (!navMenuRef.current.contains(event.target as Node)) {
+        setIsNavMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [isNavMenuOpen]);
+
+  useEffect(() => {
     if (!isTimedWarmupOpen) return;
 
     const handleClickOutside = (event: MouseEvent) => {
-      if (!timedWarmupRef.current) return;
-      if (!timedWarmupRef.current.contains(event.target as Node)) {
+      if (!navMenuRef.current) return;
+      if (!navMenuRef.current.contains(event.target as Node)) {
         setIsTimedWarmupOpen(false);
       }
     };
@@ -795,6 +811,14 @@ function App() {
     []
   );
 
+  const formatWindowDuration = (minutes: number | null | undefined): string => {
+    if (!minutes || minutes <= 0) return "";
+    if (minutes < 24 * 60) {
+      return `${Math.ceil(minutes / 60)}h`;
+    }
+    return `${Math.ceil(minutes / (24 * 60))}d`;
+  };
+
   const getAutoWarmupLabel = useCallback(
     (
       usage: UsageInfo | undefined,
@@ -802,17 +826,22 @@ function App() {
       isRunning: boolean
     ) => {
       if (isRunning) return "Warming...";
-      if (!isEnabled) return "Auto: off";
-      if (!usage || usage.error) return "Auto: on";
+      if (!isEnabled) return "off";
+      if (!usage || usage.error) return "on";
 
       const windowKind = getAutoWarmupWindowKind(usage);
       if (windowKind === "session" && isLimitFull(usage.secondary_used_percent)) {
-        return "Waiting weekly reset";
+        const weeklyDuration = formatWindowDuration(usage.secondary_window_minutes);
+        return weeklyDuration ? `Waiting ${weeklyDuration}` : "Waiting reset";
       }
-      if (windowKind === "session") return "Auto: 5h";
-      if (windowKind === "weekly") return "Auto: weekly";
+      if (windowKind === "session") {
+        return formatWindowDuration(usage.primary_window_minutes) || "5h";
+      }
+      if (windowKind === "weekly") {
+        return formatWindowDuration(usage.secondary_window_minutes) || "7d";
+      }
 
-      return "Auto: on";
+      return "on";
     },
     []
   );
@@ -1382,42 +1411,116 @@ function App() {
               >
                 <span className={isRefreshing ? "animate-spin inline-block" : ""}>↻</span>
               </button>
-              <button
-                onClick={handleWarmupAll}
-                disabled={isWarmingAll || accounts.length === 0}
-                className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100 text-gray-700 transition-colors hover:bg-gray-200 disabled:opacity-50 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700 shrink-0"
-                title="Send minimal traffic using all accounts"
-              >
-                <span className={isWarmingAll ? "animate-pulse" : ""}>⚡</span>
-              </button>
-              <button
-                onClick={() => setAutoWarmupAllEnabled((prev) => !prev)}
-                disabled={accounts.length === 0}
-                className={`flex h-10 items-center justify-center rounded-lg px-3 text-xs font-semibold transition-colors disabled:opacity-50 shrink-0 whitespace-nowrap ${
-                  autoWarmupAllEnabled
-                    ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
-                    : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                }`}
-                title={
-                  autoWarmupAllEnabled
-                    ? "Disable auto warm-up for all accounts"
-                    : "Enable auto warm-up for all accounts"
-                }
-              >
-                {headerAutoWarmupLabel}
-              </button>
-              <div className="relative shrink-0" ref={timedWarmupRef}>
+              {isAccountSearchEnabled && (
                 <button
-                  onClick={() => setIsTimedWarmupOpen((prev) => !prev)}
-                  className={`flex h-10 items-center justify-center rounded-lg px-3 text-xs font-semibold transition-colors whitespace-nowrap ${
-                    timedWarmupEnabled
-                      ? "bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-900/20 dark:text-emerald-300 dark:hover:bg-emerald-900/30"
+                  onClick={() => {
+                    if (isAccountSearchOpen) {
+                      setAccountSearchQuery("");
+                    }
+                    setIsAccountSearchOpen((prev) => !prev);
+                  }}
+                  className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors shrink-0 ${
+                    isAccountSearchOpen
+                      ? "bg-gray-900 text-white hover:bg-gray-800 dark:bg-black dark:text-white dark:hover:bg-neutral-900"
                       : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
                   }`}
-                  title="Schedule warm-up at specific times of day for all accounts"
+                  title={isAccountSearchOpen ? "Hide account search" : "Search accounts"}
                 >
-                  {timedWarmupLabel} ▾
+                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="m20 20-3.5-3.5" strokeLinecap="round" />
+                  </svg>
                 </button>
+              )}
+
+              <div className="relative" ref={navMenuRef}>
+                <button
+                  onClick={() => {
+                    setIsTimedWarmupOpen(false);
+                    setIsNavMenuOpen((prev) => !prev);
+                  }}
+                  className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors shrink-0 ${
+                    isNavMenuOpen
+                      ? "bg-gray-900 text-white hover:bg-gray-800 dark:bg-black dark:text-white dark:hover:bg-neutral-900"
+                      : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                  }`}
+                  title="Menu"
+                >
+                  <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+                    <circle cx="12" cy="5" r="1.6" />
+                    <circle cx="12" cy="12" r="1.6" />
+                    <circle cx="12" cy="19" r="1.6" />
+                  </svg>
+                </button>
+                {isNavMenuOpen && (
+                  <div className="absolute right-0 z-50 mt-2 w-64 rounded-xl border border-gray-200 bg-white p-2 text-gray-700 shadow-xl dark:border-neutral-800 dark:bg-black dark:text-white">
+                    <button
+                      onClick={() => {
+                        setIsNavMenuOpen(false);
+                        void handleWarmupAll();
+                      }}
+                      disabled={isWarmingAll || accounts.length === 0}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-gray-100 disabled:opacity-50 dark:text-white dark:hover:bg-neutral-900"
+                    >
+                      <span className="flex items-center gap-2">
+                        <span className={isWarmingAll ? "animate-pulse" : ""}>⚡</span>
+                        Warm Up
+                      </span>
+                      <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                        {isWarmingAll ? "Warming..." : "All accounts"}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsNavMenuOpen(false);
+                        setAutoWarmupAllEnabled((prev) => !prev);
+                      }}
+                      disabled={accounts.length === 0}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-gray-100 disabled:opacity-50 dark:text-white dark:hover:bg-neutral-900"
+                    >
+                      <span>Auto Warm Up</span>
+                      <span
+                        className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
+                          autoWarmupAllEnabled
+                            ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                            : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+                        }`}
+                      >
+                        {headerAutoWarmupLabel}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsNavMenuOpen(false);
+                        setIsTimedWarmupOpen((prev) => !prev);
+                      }}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:text-white dark:hover:bg-neutral-900"
+                    >
+                      <span>Timer</span>
+                      <span
+                        className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
+                          timedWarmupEnabled
+                            ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                            : "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400"
+                        }`}
+                      >
+                        {timedWarmupLabel}
+                      </span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        setIsNavMenuOpen(false);
+                        setThemeMode((prev) => (prev === "dark" ? "light" : "dark"));
+                      }}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:text-white dark:hover:bg-neutral-900"
+                    >
+                      <span>Appearance</span>
+                      <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                        {themeMode === "dark" ? "☾ Dark" : "☀ Light"}
+                      </span>
+                    </button>
+                  </div>
+                )}
                 {isTimedWarmupOpen && (
                   <div className="absolute right-0 z-20 mt-2 w-64 rounded-lg border border-gray-200 bg-white p-3 shadow-lg dark:border-gray-700 dark:bg-gray-900">
                     <label className="flex items-center justify-between text-sm font-medium text-gray-800 dark:text-gray-100">
@@ -1476,14 +1579,6 @@ function App() {
                   </div>
                 )}
               </div>
-              <button
-                onClick={() => setThemeMode((prev) => (prev === "dark" ? "light" : "dark"))}
-                className="flex h-10 w-10 items-center justify-center rounded-lg bg-gray-100 text-lg text-gray-700 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700 shrink-0"
-                title={themeMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-              >
-                {themeMode === "dark" ? "☀" : "☾"}
-              </button>
-
               <div className="relative" ref={actionsMenuRef}>
                 <button
                   onClick={() => setIsActionsMenuOpen((prev) => !prev)}
@@ -1551,7 +1646,7 @@ function App() {
       </header>
 
       {/* Main Content */}
-      <main className="max-w-5xl mx-auto px-6 py-8">
+      <main className="max-w-5xl mx-auto px-6 pt-4 pb-8">
         {loading && accounts.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20">
             <div className="animate-spin h-10 w-10 border-2 border-gray-900 dark:border-gray-100 border-t-transparent rounded-full mb-4"></div>
@@ -1581,9 +1676,20 @@ function App() {
             </button>
           </div>
         ) : (
-          <div className="space-y-8">
-            {isAccountSearchEnabled && (
-              <div className="relative max-w-lg">
+          <div className="space-y-4">
+            {hasNoMatchingAccounts && (
+              <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-12 text-center dark:border-gray-700">
+                <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                  No matching accounts
+                </h2>
+                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                  Try a different account name or email address.
+                </p>
+              </div>
+            )}
+
+            {isAccountSearchEnabled && isAccountSearchOpen && (
+              <div className="relative w-full">
                 <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-gray-400 dark:text-gray-500">
                   <svg
                     className="h-4 w-4"
@@ -1603,6 +1709,7 @@ function App() {
                   onChange={(event) => setAccountSearchQuery(event.target.value)}
                   placeholder="Search accounts by name or email"
                   aria-label="Search accounts"
+                  autoFocus
                   className="w-full rounded-xl border border-gray-300 bg-white py-2.5 pl-10 pr-10 text-sm text-gray-900 shadow-sm transition-colors placeholder:text-gray-400 focus:border-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder:text-gray-500 dark:focus:border-gray-600 dark:focus:ring-gray-800"
                 />
                 {accountSearchQuery.length > 0 && (
@@ -1624,17 +1731,6 @@ function App() {
                     </svg>
                   </button>
                 )}
-              </div>
-            )}
-
-            {hasNoMatchingAccounts && (
-              <div className="rounded-2xl border border-dashed border-gray-300 px-6 py-12 text-center dark:border-gray-700">
-                <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-                  No matching accounts
-                </h2>
-                <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                  Try a different account name or email address.
-                </p>
               </div>
             )}
 

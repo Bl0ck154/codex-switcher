@@ -11,7 +11,7 @@ const PROFILE_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 interface AccountUsageStatsProps {
   accountId: string;
   enabled: boolean;
-  defaultOpen?: boolean;
+  open: boolean;
   onStatsLoaded?: (stats: AccountUsageStatsInfo | null) => void;
 }
 
@@ -344,10 +344,9 @@ function InvocationRow({ invocation }: { invocation: AccountTopInvocation }) {
 export function AccountUsageStats({
   accountId,
   enabled,
-  defaultOpen = false,
+  open,
   onStatsLoaded,
 }: AccountUsageStatsProps) {
-  const [panelOpen, setPanelOpen] = useState(defaultOpen);
   const [stats, setStats] = useState<AccountUsageStatsInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const requestSeq = useRef(0);
@@ -388,21 +387,20 @@ export function AccountUsageStats({
     setStats(null);
     onStatsLoaded?.(null);
     setLoading(false);
-    setPanelOpen(defaultOpen);
-  }, [accountId, defaultOpen, onStatsLoaded]);
+  }, [accountId, onStatsLoaded]);
 
   useEffect(() => {
-    if (!panelOpen) return;
+    if (!open) return;
     void loadStats();
-  }, [loadStats, panelOpen]);
+  }, [loadStats, open]);
 
   useEffect(() => {
-    if (!enabled || !panelOpen) return;
+    if (!enabled || !open) return;
     const timer = window.setInterval(() => {
       void loadStats();
     }, PROFILE_REFRESH_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [enabled, loadStats, panelOpen]);
+  }, [enabled, loadStats, open]);
 
   const currentStats = stats?.account_id === accountId ? stats : null;
   const generatedAt = currentStats ? formatGeneratedAt(currentStats.generated_at) : "";
@@ -410,30 +408,11 @@ export function AccountUsageStats({
   const sevenDayTokens = currentStats ? sumDays(currentStats.daily, 7) : null;
   const thirtyDayTokens = currentStats ? sumDays(currentStats.daily, 30) : null;
 
-  return (
-    <details
-      open={panelOpen}
-      onToggle={(event) => setPanelOpen(event.currentTarget.open)}
-      className="group mt-4 border-t border-gray-200 pt-3 dark:border-gray-800"
-    >
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 rounded-lg px-1 py-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
-        <span className="flex min-w-0 items-center gap-2">
-            <svg className="h-4 w-4 text-gray-500 dark:text-gray-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M4 19V5" strokeLinecap="round" />
-              <path d="M4 19h16" strokeLinecap="round" />
-              <path d="M8 15l3-4 3 2 4-6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          <span className="truncate">Usage Stats</span>
-          {generatedAt && (
-            <span className="truncate text-[11px] font-normal text-gray-500 dark:text-gray-400">
-              updated {generatedAt}
-            </span>
-          )}
-        </span>
-        <span className="text-gray-400 transition-transform group-open:rotate-180">⌄</span>
-      </summary>
+  if (!open) return null;
 
-      <div className="pt-3">
+  return (
+    <div className="mt-4 border-t border-gray-200 pt-3 dark:border-gray-800">
+      <div>
         <div className="mb-3 flex items-center justify-between gap-3">
           <p className="truncate text-[11px] text-gray-500 dark:text-gray-400">
             {currentStats?.stats_as_of ? `Stats as of ${currentStats.stats_as_of}` : currentStats?.source ?? "ChatGPT backend"}
@@ -480,6 +459,6 @@ export function AccountUsageStats({
           </div>
         )}
       </div>
-    </details>
+    </div>
   );
 }
