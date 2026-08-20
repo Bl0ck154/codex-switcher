@@ -4,7 +4,7 @@ use crate::auth::{
     add_account, create_chatgpt_account_from_refresh_token, get_active_account,
     import_from_auth_json, import_from_auth_json_contents, load_accounts, remove_account,
     read_current_auth, save_accounts, set_active_account, switch_to_account,
-    sync_active_account_tokens, touch_account,
+    sync_active_account_tokens, touch_account, AUTH_OPERATION_LOCK,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
@@ -129,15 +129,20 @@ pub async fn add_account_from_auth_json_text(
 /// Switch to a different account
 #[tauri::command]
 pub async fn switch_account(account_id: String) -> Result<(), String> {
-    switch_account_by_id(&account_id)
+    tokio::task::spawn_blocking(move || switch_account_by_id(&account_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 pub fn switch_account_by_id(account_id: &str) -> Result<(), String> {
+    let _auth_guard = AUTH_OPERATION_LOCK.blocking_lock();
     let mut store = load_accounts().map_err(|e| e.to_string())?;
 
-    if !store.accounts.iter().any(|account| account.id == account_id) {
-        return Err(format!("Account not found: {account_id}"));
-    }
+    let target_index = store
+        .accounts
+        .iter()
+        .position(|account| account.id == account_id)
+        .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
     ensure_codex_not_running()?;
 
@@ -149,11 +154,7 @@ pub fn switch_account_by_id(account_id: &str) -> Result<(), String> {
         }
     }
 
-    let account = store
-        .accounts
-        .iter()
-        .find(|account| account.id == account_id)
-        .expect("account existence checked above");
+    let account = &store.accounts[target_index];
 
     // Write to ~/.codex/auth.json
     switch_to_account(account).map_err(|e| e.to_string())?;

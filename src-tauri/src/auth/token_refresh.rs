@@ -5,7 +5,7 @@ use base64::Engine;
 use chrono::Utc;
 use tokio::time::{sleep, Duration};
 
-use super::{load_accounts, switch_to_account, update_account_chatgpt_tokens};
+use super::{load_accounts, switch_to_account, update_account_chatgpt_tokens, AUTH_OPERATION_LOCK};
 use crate::types::{parse_chatgpt_id_token_claims, AuthData, StoredAccount};
 
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
@@ -42,18 +42,28 @@ pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<Stor
 
 /// Force-refresh ChatGPT OAuth tokens for an account.
 pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAccount> {
-    let (current_id_token, current_refresh_token, current_account_id) = match &account.auth_data {
-        AuthData::ApiKey { .. } => return Ok(account.clone()),
+    if matches!(account.auth_data, AuthData::ApiKey { .. }) {
+        return Ok(account.clone());
+    }
+
+    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    let current = load_accounts()?
+        .accounts
+        .into_iter()
+        .find(|stored| stored.id == account.id)
+        .context("Account not found")?;
+    let (current_id_token, current_refresh_token, current_account_id) = match &current.auth_data {
         AuthData::ChatGPT {
             id_token,
             refresh_token,
             account_id,
             ..
         } => (id_token.clone(), refresh_token.clone(), account_id.clone()),
+        AuthData::ApiKey { .. } => return Ok(current),
     };
 
     if current_refresh_token.is_empty() {
-        anyhow::bail!("Missing refresh token for account {}", account.name);
+        anyhow::bail!("Missing refresh token for account {}", current.name);
     }
 
     let is_active = load_accounts()?.active_account_id.as_deref() == Some(account.id.as_str());
@@ -83,7 +93,8 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
         claims.subscription_expires_at,
     )?;
 
-    // Keep ~/.codex/auth.json in sync when this is the active account.
+    // Re-read active state after the network request before touching auth.json.
+    let is_active = load_accounts()?.active_account_id.as_deref() == Some(account.id.as_str());
     if is_active {
         if let Err(err) = switch_to_account(&updated) {
             println!("[Auth] Failed to sync active auth.json after token refresh: {err}");
@@ -156,6 +167,7 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
     for attempt in 1..=3u8 {
         match client
             .post(format!("{DEFAULT_ISSUER}/oauth/token"))
+            .timeout(Duration::from_secs(10))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(body.clone())
             .send()
