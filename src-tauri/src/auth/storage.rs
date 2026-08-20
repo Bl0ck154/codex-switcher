@@ -6,7 +6,55 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
-use crate::types::{AccountsStore, AppSettings, AuthData, StoredAccount};
+use crate::types::{AccountsStore, AppSettings, AuthData, AuthDotJson, StoredAccount};
+
+pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson) -> bool {
+    let Some(active_id) = store.active_account_id.as_deref() else {
+        return false;
+    };
+    let Some(tokens) = auth.tokens.as_ref() else {
+        return false;
+    };
+    let Some(account) = store
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == active_id)
+    else {
+        return false;
+    };
+    let AuthData::ChatGPT {
+        id_token,
+        access_token,
+        refresh_token,
+        account_id,
+    } = &mut account.auth_data
+    else {
+        return false;
+    };
+
+    if account_id.is_some()
+        && tokens.account_id.is_some()
+        && account_id.as_ref() != tokens.account_id.as_ref()
+    {
+        return false;
+    }
+
+    let changed = *id_token != tokens.id_token
+        || *access_token != tokens.access_token
+        || *refresh_token != tokens.refresh_token
+        || (tokens.account_id.is_some() && *account_id != tokens.account_id);
+    if !changed {
+        return false;
+    }
+
+    id_token.clone_from(&tokens.id_token);
+    access_token.clone_from(&tokens.access_token);
+    refresh_token.clone_from(&tokens.refresh_token);
+    if tokens.account_id.is_some() {
+        account_id.clone_from(&tokens.account_id);
+    }
+    true
+}
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
@@ -304,4 +352,69 @@ pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
     store.masked_account_ids = ids;
     save_accounts(&store)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sync_active_account_tokens;
+    use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
+
+    fn account(name: &str, account_id: &str, suffix: &str) -> StoredAccount {
+        StoredAccount::new_chatgpt(
+            name.into(),
+            None,
+            None,
+            None,
+            format!("id-{suffix}"),
+            format!("access-{suffix}"),
+            format!("refresh-{suffix}"),
+            Some(account_id.into()),
+        )
+    }
+
+    fn auth(account_id: &str, suffix: &str) -> AuthDotJson {
+        AuthDotJson {
+            openai_api_key: None,
+            tokens: Some(TokenData {
+                id_token: format!("id-{suffix}"),
+                access_token: format!("access-{suffix}"),
+                refresh_token: format!("refresh-{suffix}"),
+                account_id: Some(account_id.into()),
+            }),
+            last_refresh: None,
+        }
+    }
+
+    #[test]
+    fn preserves_rotated_tokens_before_switching_away_and_back() {
+        let account_a = account("A", "workspace-a", "a1");
+        let account_a_id = account_a.id.clone();
+        let account_b = account("B", "workspace-b", "b1");
+        let account_b_id = account_b.id.clone();
+        let mut store = AccountsStore {
+            accounts: vec![account_a, account_b],
+            active_account_id: Some(account_a_id.clone()),
+            ..AccountsStore::default()
+        };
+
+        assert!(!sync_active_account_tokens(
+            &mut store,
+            &auth("workspace-b", "wrong-account")
+        ));
+        assert!(sync_active_account_tokens(
+            &mut store,
+            &auth("workspace-a", "a2")
+        ));
+        store.active_account_id = Some(account_b_id);
+
+        let restored_a = store
+            .accounts
+            .iter()
+            .find(|account| account.id == account_a_id)
+            .unwrap();
+        let AuthData::ChatGPT { refresh_token, .. } = &restored_a.auth_data else {
+            panic!("expected ChatGPT account");
+        };
+        assert_eq!(refresh_token, "refresh-a2");
+    }
 }

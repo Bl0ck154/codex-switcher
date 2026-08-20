@@ -56,6 +56,13 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
         anyhow::bail!("Missing refresh token for account {}", account.name);
     }
 
+    let is_active = load_accounts()?.active_account_id.as_deref() == Some(account.id.as_str());
+    if is_active && crate::commands::process::ensure_codex_not_running().is_err() {
+        anyhow::bail!(
+            "Cannot refresh the active account while Codex/ChatGPT is running; let the running app refresh its session"
+        );
+    }
+
     let refreshed = refresh_tokens_with_refresh_token(&current_refresh_token).await?;
     let next_id_token = refreshed.id_token.unwrap_or(current_id_token);
     let next_refresh_token = refreshed
@@ -64,8 +71,6 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
 
     let claims = parse_chatgpt_id_token_claims(&next_id_token);
     let next_account_id = claims.account_id.or(current_account_id);
-
-    let is_active = load_accounts()?.active_account_id.as_deref() == Some(account.id.as_str());
 
     let updated = update_account_chatgpt_tokens(
         &account.id,
