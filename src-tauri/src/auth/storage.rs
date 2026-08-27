@@ -34,17 +34,25 @@ pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson)
         return false;
     };
 
+    let stored_account_id = parse_chatgpt_id_token_claims(id_token)
+        .account_id
+        .or_else(|| account_id.clone());
     let current_account_id = parse_chatgpt_id_token_claims(&tokens.id_token)
         .account_id
         .or_else(|| tokens.account_id.clone());
-    if account_id.is_some() && account_id.as_ref() != current_account_id.as_ref() {
+    let (Some(stored_account_id), Some(current_account_id)) =
+        (stored_account_id, current_account_id)
+    else {
+        return false;
+    };
+    if stored_account_id != current_account_id {
         return false;
     }
 
     let changed = *id_token != tokens.id_token
         || *access_token != tokens.access_token
         || *refresh_token != tokens.refresh_token
-        || (current_account_id.is_some() && *account_id != current_account_id);
+        || account_id.as_ref() != Some(&current_account_id);
     if !changed {
         return false;
     }
@@ -52,9 +60,7 @@ pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson)
     id_token.clone_from(&tokens.id_token);
     access_token.clone_from(&tokens.access_token);
     refresh_token.clone_from(&tokens.refresh_token);
-    if current_account_id.is_some() {
-        account_id.clone_from(&current_account_id);
-    }
+    *account_id = Some(current_account_id);
     true
 }
 
@@ -395,6 +401,13 @@ mod tests {
         }
     }
 
+    fn id_token_with_account_id(account_id: &str, suffix: &str) -> String {
+        let payload =
+            format!(r#"{{"https://api.openai.com/auth":{{"chatgpt_account_id":"{account_id}"}}}}"#);
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
+        format!("header.{encoded}.{suffix}")
+    }
+
     #[test]
     fn preserves_rotated_tokens_before_switching_away_and_back() {
         let account_a = account("A", "workspace-a", "a1");
@@ -413,11 +426,9 @@ mod tests {
         ));
         assert_eq!(refresh_token(&store.accounts[0]), "refresh-a1");
 
-        let payload = r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"workspace-b"}}"#;
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
         let mut auth_without_top_level_id = auth("workspace-b", "missing-id");
         let tokens = auth_without_top_level_id.tokens.as_mut().unwrap();
-        tokens.id_token = format!("header.{encoded}.signature");
+        tokens.id_token = id_token_with_account_id("workspace-b", "signature");
         tokens.account_id = None;
         assert!(!sync_active_account_tokens(
             &mut store,
@@ -448,5 +459,65 @@ mod tests {
             panic!("expected ChatGPT account");
         };
         assert_eq!(refresh_token, "refresh-a2");
+    }
+
+    #[test]
+    fn rejects_live_tokens_when_stored_account_identity_is_unknown() {
+        let mut account = account("A", "workspace-a", "a1");
+        let account_id = account.id.clone();
+        let AuthData::ChatGPT {
+            id_token,
+            account_id: chatgpt_account_id,
+            ..
+        } = &mut account.auth_data
+        else {
+            panic!("expected ChatGPT account");
+        };
+        *id_token = "opaque-id-token".into();
+        *chatgpt_account_id = None;
+
+        let mut store = AccountsStore {
+            accounts: vec![account],
+            active_account_id: Some(account_id),
+            ..AccountsStore::default()
+        };
+
+        assert!(!sync_active_account_tokens(
+            &mut store,
+            &auth("workspace-a", "a2")
+        ));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-a1");
+    }
+
+    #[test]
+    fn derives_stored_identity_from_id_token_and_backfills_account_id() {
+        let mut account = account("A", "workspace-a", "a1");
+        let account_id = account.id.clone();
+        let AuthData::ChatGPT {
+            id_token,
+            account_id: chatgpt_account_id,
+            ..
+        } = &mut account.auth_data
+        else {
+            panic!("expected ChatGPT account");
+        };
+        *id_token = id_token_with_account_id("workspace-a", "stored");
+        *chatgpt_account_id = None;
+
+        let mut store = AccountsStore {
+            accounts: vec![account],
+            active_account_id: Some(account_id),
+            ..AccountsStore::default()
+        };
+
+        assert!(sync_active_account_tokens(
+            &mut store,
+            &auth("workspace-a", "a2")
+        ));
+        let AuthData::ChatGPT { account_id, .. } = &store.accounts[0].auth_data else {
+            panic!("expected ChatGPT account");
+        };
+        assert_eq!(account_id.as_deref(), Some("workspace-a"));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-a2");
     }
 }
