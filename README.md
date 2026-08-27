@@ -12,7 +12,7 @@
 ## Features
 
 - **Multi-Account Management** – Add, rename, mask, import, export, and manage multiple Codex accounts in one place
-- **Quick Switching** – Switch between accounts from the main window, native tray menu, or tray popup
+- **Quick Switching** – Switch between accounts from the main window, native tray menu, or tray popup while preserving rotated ChatGPT sessions
 - **Usage Stats** – View account usage stats for OAuth accounts, including lifetime tokens, daily buckets, streaks, activity insights, and top integrations
 - **Manual Reset Credits** – See available manual reset credits beside each account plan badge, with the closest expiry highlighted as it approaches
 - **Automatic Warm-Up** – Warm up one account or all accounts manually, after each 5-hour reset window, or at specific scheduled times of day
@@ -118,6 +118,23 @@ Codex Switcher shows two kinds of account usage information:
 
 The tray popup also includes compact active-account stats for today and
 the last 7 days, while keeping the normal rate-limit refresh flow separate.
+
+## Safe Account Switching
+
+ChatGPT can replace an OAuth refresh token after using it. Once replaced, the
+older token may no longer be accepted. Before Codex Switcher writes another
+account to `~/.codex/auth.json`, it now saves the latest tokens from the account
+that is currently active. Switching back therefore restores the current session
+instead of an older snapshot.
+
+Token refreshes and account switches are serialized so a background refresh
+cannot finish late and overwrite the account you just selected. Codex Switcher
+also avoids refreshing the active account while Codex or ChatGPT is running;
+close the running app before switching accounts.
+
+If an older Codex Switcher version already saved an invalid refresh token, sign
+in to that account again or remove and re-add it once. An invalidated token
+cannot be recovered locally.
 
 ## macOS Dock and Menu Bar Mode
 

@@ -6,7 +6,57 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 
-use crate::types::{AccountsStore, AppSettings, AuthData, StoredAccount};
+use crate::types::{
+    parse_chatgpt_id_token_claims, AccountsStore, AppSettings, AuthData, AuthDotJson, StoredAccount,
+};
+
+pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson) -> bool {
+    let Some(active_id) = store.active_account_id.as_deref() else {
+        return false;
+    };
+    let Some(tokens) = auth.tokens.as_ref() else {
+        return false;
+    };
+    let Some(account) = store
+        .accounts
+        .iter_mut()
+        .find(|account| account.id == active_id)
+    else {
+        return false;
+    };
+    let AuthData::ChatGPT {
+        id_token,
+        access_token,
+        refresh_token,
+        account_id,
+    } = &mut account.auth_data
+    else {
+        return false;
+    };
+
+    let current_account_id = parse_chatgpt_id_token_claims(&tokens.id_token)
+        .account_id
+        .or_else(|| tokens.account_id.clone());
+    if account_id.is_some() && account_id.as_ref() != current_account_id.as_ref() {
+        return false;
+    }
+
+    let changed = *id_token != tokens.id_token
+        || *access_token != tokens.access_token
+        || *refresh_token != tokens.refresh_token
+        || (current_account_id.is_some() && *account_id != current_account_id);
+    if !changed {
+        return false;
+    }
+
+    id_token.clone_from(&tokens.id_token);
+    access_token.clone_from(&tokens.access_token);
+    refresh_token.clone_from(&tokens.refresh_token);
+    if current_account_id.is_some() {
+        account_id.clone_from(&current_account_id);
+    }
+    true
+}
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
@@ -304,4 +354,99 @@ pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
     store.masked_account_ids = ids;
     save_accounts(&store)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sync_active_account_tokens;
+    use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
+    use base64::Engine;
+
+    fn account(name: &str, account_id: &str, suffix: &str) -> StoredAccount {
+        StoredAccount::new_chatgpt(
+            name.into(),
+            None,
+            None,
+            None,
+            format!("id-{suffix}"),
+            format!("access-{suffix}"),
+            format!("refresh-{suffix}"),
+            Some(account_id.into()),
+        )
+    }
+
+    fn auth(account_id: &str, suffix: &str) -> AuthDotJson {
+        AuthDotJson {
+            openai_api_key: None,
+            tokens: Some(TokenData {
+                id_token: format!("id-{suffix}"),
+                access_token: format!("access-{suffix}"),
+                refresh_token: format!("refresh-{suffix}"),
+                account_id: Some(account_id.into()),
+            }),
+            last_refresh: None,
+        }
+    }
+
+    fn refresh_token(account: &StoredAccount) -> &str {
+        match &account.auth_data {
+            AuthData::ChatGPT { refresh_token, .. } => refresh_token,
+            AuthData::ApiKey { .. } => panic!("expected ChatGPT account"),
+        }
+    }
+
+    #[test]
+    fn preserves_rotated_tokens_before_switching_away_and_back() {
+        let account_a = account("A", "workspace-a", "a1");
+        let account_a_id = account_a.id.clone();
+        let account_b = account("B", "workspace-b", "b1");
+        let account_b_id = account_b.id.clone();
+        let mut store = AccountsStore {
+            accounts: vec![account_a, account_b],
+            active_account_id: Some(account_a_id.clone()),
+            ..AccountsStore::default()
+        };
+
+        assert!(!sync_active_account_tokens(
+            &mut store,
+            &auth("workspace-b", "wrong-account")
+        ));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-a1");
+
+        let payload = r#"{"https://api.openai.com/auth":{"chatgpt_account_id":"workspace-b"}}"#;
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
+        let mut auth_without_top_level_id = auth("workspace-b", "missing-id");
+        let tokens = auth_without_top_level_id.tokens.as_mut().unwrap();
+        tokens.id_token = format!("header.{encoded}.signature");
+        tokens.account_id = None;
+        assert!(!sync_active_account_tokens(
+            &mut store,
+            &auth_without_top_level_id
+        ));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-a1");
+
+        let mut auth_without_identity = auth("workspace-a", "unknown");
+        auth_without_identity.tokens.as_mut().unwrap().account_id = None;
+        assert!(!sync_active_account_tokens(
+            &mut store,
+            &auth_without_identity
+        ));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-a1");
+
+        assert!(sync_active_account_tokens(
+            &mut store,
+            &auth("workspace-a", "a2")
+        ));
+        store.active_account_id = Some(account_b_id);
+
+        let restored_a = store
+            .accounts
+            .iter()
+            .find(|account| account.id == account_a_id)
+            .unwrap();
+        let AuthData::ChatGPT { refresh_token, .. } = &restored_a.auth_data else {
+            panic!("expected ChatGPT account");
+        };
+        assert_eq!(refresh_token, "refresh-a2");
+    }
 }
