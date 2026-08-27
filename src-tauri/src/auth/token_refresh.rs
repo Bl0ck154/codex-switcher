@@ -5,8 +5,13 @@ use base64::Engine;
 use chrono::Utc;
 use tokio::time::{sleep, Duration};
 
-use super::{load_accounts, switch_to_account, update_account_chatgpt_tokens, AUTH_OPERATION_LOCK};
-use crate::types::{parse_chatgpt_id_token_claims, AuthData, StoredAccount};
+use super::{
+    load_accounts, read_current_auth, save_accounts, switch_to_account, sync_active_account_tokens,
+    update_account_chatgpt_tokens, AUTH_OPERATION_LOCK,
+};
+use crate::types::{
+    parse_chatgpt_id_token_claims, AccountsStore, AuthData, AuthDotJson, StoredAccount,
+};
 
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
@@ -48,12 +53,9 @@ pub(crate) async fn ensure_chatgpt_tokens_fresh_locked(
         return Ok(account.clone());
     }
 
-    // The account may have been refreshed while this task waited for the lock.
-    let current = load_accounts()?
-        .accounts
-        .into_iter()
-        .find(|stored| stored.id == account.id)
-        .context("Account not found")?;
+    // Codex may have refreshed the active account while this task waited for
+    // the lock. Prefer those live credentials over rotating the stored token.
+    let (current, _) = load_account_reconciling_live_auth(&account.id)?;
 
     match &current.auth_data {
         AuthData::ApiKey { .. } => Ok(current.clone()),
@@ -86,11 +88,16 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
 }
 
 async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<StoredAccount> {
-    let current = load_accounts()?
-        .accounts
-        .into_iter()
-        .find(|stored| stored.id == account.id)
-        .context("Account not found")?;
+    let (current, is_active) = load_account_reconciling_live_auth(&account.id)?;
+
+    if is_active && crate::commands::process::ensure_codex_not_running().is_err() {
+        println!(
+            "[Auth] Using the running app's live credentials for active account {}",
+            current.name
+        );
+        return Ok(current);
+    }
+
     let (current_id_token, current_refresh_token, current_account_id) = match &current.auth_data {
         AuthData::ChatGPT {
             id_token,
@@ -103,13 +110,6 @@ async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<Stored
 
     if current_refresh_token.is_empty() {
         anyhow::bail!("Missing refresh token for account {}", current.name);
-    }
-
-    let is_active = load_accounts()?.active_account_id.as_deref() == Some(account.id.as_str());
-    if is_active && crate::commands::process::ensure_codex_not_running().is_err() {
-        anyhow::bail!(
-            "Cannot refresh the active account while Codex/ChatGPT is running; let the running app refresh its session"
-        );
     }
 
     let refreshed = refresh_tokens_with_refresh_token(&current_refresh_token).await?;
@@ -149,6 +149,38 @@ async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<Stored
     }
 
     Ok(updated)
+}
+
+fn reconcile_active_account_from_auth(
+    store: &mut AccountsStore,
+    account_id: &str,
+    auth: &AuthDotJson,
+) -> bool {
+    if store.active_account_id.as_deref() != Some(account_id) {
+        return false;
+    }
+
+    sync_active_account_tokens(store, auth)
+}
+
+fn load_account_reconciling_live_auth(account_id: &str) -> Result<(StoredAccount, bool)> {
+    let mut store = load_accounts()?;
+    let is_active = store.active_account_id.as_deref() == Some(account_id);
+
+    if is_active {
+        if let Some(auth) = read_current_auth()? {
+            if reconcile_active_account_from_auth(&mut store, account_id, &auth) {
+                save_accounts(&store)?;
+            }
+        }
+    }
+
+    let account = store
+        .accounts
+        .into_iter()
+        .find(|stored| stored.id == account_id)
+        .context("Account not found")?;
+    Ok((account, is_active))
 }
 
 /// Build a new ChatGPT account from a refresh token.
@@ -317,14 +349,22 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
 #[cfg(test)]
 mod tests {
     use super::{
-        chatgpt_tokens_need_refresh_at, merge_refresh_response, resolve_refreshed_id_token,
-        RefreshTokenResponse,
+        chatgpt_tokens_need_refresh, chatgpt_tokens_need_refresh_at, merge_refresh_response,
+        reconcile_active_account_from_auth, resolve_refreshed_id_token, RefreshTokenResponse,
     };
+    use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
     fn jwt_with_exp(exp: i64) -> String {
         let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
         format!("header.{payload}.signature")
+    }
+
+    fn account_jwt(account_id: &str, exp: i64, signature: &str) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(format!(
+            r#"{{"exp":{exp},"https://api.openai.com/auth":{{"chatgpt_account_id":"{account_id}"}}}}"#
+        ));
+        format!("header.{payload}.{signature}")
     }
 
     #[test]
@@ -386,6 +426,88 @@ mod tests {
         let resolved = resolve_refreshed_id_token(current_id_token.clone(), None, now).unwrap();
 
         assert_eq!(resolved, current_id_token);
+    }
+
+    #[test]
+    fn active_account_uses_fresh_tokens_from_live_auth() {
+        let now = chrono::Utc::now().timestamp();
+        let mut account = StoredAccount::new_chatgpt(
+            "Active".into(),
+            None,
+            None,
+            None,
+            account_jwt("workspace-a", now - 3_600, "stored"),
+            jwt_with_exp(now - 3_600),
+            "stored-refresh".into(),
+            Some("workspace-a".into()),
+        );
+        let local_id = account.id.clone();
+        let mut store = AccountsStore {
+            accounts: vec![account.clone()],
+            active_account_id: Some(local_id.clone()),
+            ..AccountsStore::default()
+        };
+        let auth = AuthDotJson {
+            openai_api_key: None,
+            tokens: Some(TokenData {
+                id_token: account_jwt("workspace-a", now + 3_600, "live"),
+                access_token: jwt_with_exp(now + 3_600),
+                refresh_token: "live-refresh".into(),
+                account_id: Some("workspace-a".into()),
+            }),
+            last_refresh: None,
+        };
+
+        assert!(chatgpt_tokens_need_refresh(&account));
+        assert!(reconcile_active_account_from_auth(
+            &mut store, &local_id, &auth
+        ));
+
+        account = store.accounts.remove(0);
+        assert!(!chatgpt_tokens_need_refresh(&account));
+        let AuthData::ChatGPT { refresh_token, .. } = account.auth_data else {
+            panic!("expected ChatGPT account");
+        };
+        assert_eq!(refresh_token, "live-refresh");
+    }
+
+    #[test]
+    fn inactive_account_does_not_use_live_auth() {
+        let now = chrono::Utc::now().timestamp();
+        let account = StoredAccount::new_chatgpt(
+            "Inactive".into(),
+            None,
+            None,
+            None,
+            account_jwt("workspace-a", now - 3_600, "stored"),
+            jwt_with_exp(now - 3_600),
+            "stored-refresh".into(),
+            Some("workspace-a".into()),
+        );
+        let local_id = account.id.clone();
+        let mut store = AccountsStore {
+            accounts: vec![account],
+            active_account_id: Some("different-local-account".into()),
+            ..AccountsStore::default()
+        };
+        let auth = AuthDotJson {
+            openai_api_key: None,
+            tokens: Some(TokenData {
+                id_token: account_jwt("workspace-a", now + 3_600, "live"),
+                access_token: jwt_with_exp(now + 3_600),
+                refresh_token: "live-refresh".into(),
+                account_id: Some("workspace-a".into()),
+            }),
+            last_refresh: None,
+        };
+
+        assert!(!reconcile_active_account_from_auth(
+            &mut store, &local_id, &auth
+        ));
+        let AuthData::ChatGPT { refresh_token, .. } = &store.accounts[0].auth_data else {
+            panic!("expected ChatGPT account");
+        };
+        assert_eq!(refresh_token, "stored-refresh");
     }
 
     #[test]
