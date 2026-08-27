@@ -21,20 +21,55 @@ struct RefreshTokenResponse {
     refresh_token: Option<String>,
 }
 
-/// Ensure the account has a non-expired ChatGPT access token.
+#[derive(Debug)]
+struct TokenRefreshUpdate {
+    id_token: String,
+    access_token: String,
+    refresh_token: String,
+    id_token_error: Option<anyhow::Error>,
+}
+
+/// Ensure the account has non-expired ChatGPT OAuth tokens.
 /// Returns an updated account when a refresh was performed.
 pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<StoredAccount> {
-    match &account.auth_data {
-        AuthData::ApiKey { .. } => Ok(account.clone()),
-        AuthData::ChatGPT { access_token, .. } => {
-            if token_expired_or_near_expiry(access_token) {
+    if !chatgpt_tokens_need_refresh(account) {
+        return Ok(account.clone());
+    }
+
+    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    ensure_chatgpt_tokens_fresh_locked(account).await
+}
+
+/// Ensure ChatGPT OAuth tokens are fresh while the caller holds AUTH_OPERATION_LOCK.
+pub(crate) async fn ensure_chatgpt_tokens_fresh_locked(
+    account: &StoredAccount,
+) -> Result<StoredAccount> {
+    if matches!(account.auth_data, AuthData::ApiKey { .. }) {
+        return Ok(account.clone());
+    }
+
+    // The account may have been refreshed while this task waited for the lock.
+    let current = load_accounts()?
+        .accounts
+        .into_iter()
+        .find(|stored| stored.id == account.id)
+        .context("Account not found")?;
+
+    match &current.auth_data {
+        AuthData::ApiKey { .. } => Ok(current.clone()),
+        AuthData::ChatGPT {
+            id_token,
+            access_token,
+            ..
+        } => {
+            if chatgpt_tokens_need_refresh_at(id_token, access_token, Utc::now().timestamp()) {
                 println!(
-                    "[Auth] Access token expired/near expiry for account {}, refreshing",
-                    account.name
+                    "[Auth] OAuth token expired/near expiry for account {}, refreshing",
+                    current.name
                 );
-                refresh_chatgpt_tokens(account).await
+                refresh_chatgpt_tokens_locked(&current).await
             } else {
-                Ok(account.clone())
+                Ok(current)
             }
         }
     }
@@ -47,6 +82,10 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
     }
 
     let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    refresh_chatgpt_tokens_locked(account).await
+}
+
+async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<StoredAccount> {
     let current = load_accounts()?
         .accounts
         .into_iter()
@@ -74,24 +113,32 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
     }
 
     let refreshed = refresh_tokens_with_refresh_token(&current_refresh_token).await?;
-    let next_id_token = refreshed.id_token.unwrap_or(current_id_token);
-    let next_refresh_token = refreshed
-        .refresh_token
-        .unwrap_or_else(|| current_refresh_token.clone());
+    let next = merge_refresh_response(
+        current_id_token,
+        current_refresh_token,
+        refreshed,
+        Utc::now().timestamp(),
+    );
 
-    let claims = parse_chatgpt_id_token_claims(&next_id_token);
+    let claims = parse_chatgpt_id_token_claims(&next.id_token);
     let next_account_id = claims.account_id.or(current_account_id);
 
     let updated = update_account_chatgpt_tokens(
         &account.id,
-        next_id_token,
-        refreshed.access_token,
-        next_refresh_token,
+        next.id_token,
+        next.access_token,
+        next.refresh_token,
         next_account_id,
         claims.email,
         claims.plan_type,
         claims.subscription_expires_at,
     )?;
+
+    // Refresh tokens can be single-use. Persist a rotated replacement before
+    // reporting an unusable ID token, so a later retry can still recover.
+    if let Some(error) = next.id_token_error {
+        return Err(error);
+    }
 
     // Re-read active state after the network request before touching auth.json.
     let is_active = load_accounts()?.active_account_id.as_deref() == Some(account.id.as_str());
@@ -133,10 +180,71 @@ pub async fn create_chatgpt_account_from_refresh_token(
     ))
 }
 
-fn token_expired_or_near_expiry(access_token: &str) -> bool {
-    match parse_jwt_exp(access_token) {
-        Some(expiry) => expiry <= Utc::now().timestamp() + EXPIRY_SKEW_SECONDS,
+fn chatgpt_tokens_need_refresh(account: &StoredAccount) -> bool {
+    match &account.auth_data {
+        AuthData::ApiKey { .. } => false,
+        AuthData::ChatGPT {
+            id_token,
+            access_token,
+            ..
+        } => chatgpt_tokens_need_refresh_at(id_token, access_token, Utc::now().timestamp()),
+    }
+}
+
+fn chatgpt_tokens_need_refresh_at(id_token: &str, access_token: &str, now: i64) -> bool {
+    id_token_needs_refresh_at(id_token, now) || token_expired_or_near_expiry_at(access_token, now)
+}
+
+fn id_token_needs_refresh_at(token: &str, now: i64) -> bool {
+    match parse_jwt_exp(token) {
+        Some(expiry) => expiry <= now + EXPIRY_SKEW_SECONDS,
+        None => true,
+    }
+}
+
+fn token_expired_or_near_expiry_at(token: &str, now: i64) -> bool {
+    match parse_jwt_exp(token) {
+        Some(expiry) => expiry <= now + EXPIRY_SKEW_SECONDS,
         None => false,
+    }
+}
+
+fn resolve_refreshed_id_token(
+    current_id_token: String,
+    refreshed_id_token: Option<String>,
+    now: i64,
+) -> Result<String> {
+    match refreshed_id_token {
+        Some(id_token) if id_token_needs_refresh_at(&id_token, now) => {
+            anyhow::bail!("Token refresh returned an invalid or expired id_token")
+        }
+        Some(id_token) => Ok(id_token),
+        None if id_token_needs_refresh_at(&current_id_token, now) => {
+            anyhow::bail!(
+                "Token refresh did not return a fresh id_token; sign in to the account again"
+            )
+        }
+        None => Ok(current_id_token),
+    }
+}
+
+fn merge_refresh_response(
+    current_id_token: String,
+    current_refresh_token: String,
+    refreshed: RefreshTokenResponse,
+    now: i64,
+) -> TokenRefreshUpdate {
+    let (id_token, id_token_error) =
+        match resolve_refreshed_id_token(current_id_token.clone(), refreshed.id_token, now) {
+            Ok(id_token) => (id_token, None),
+            Err(error) => (current_id_token, Some(error)),
+        };
+
+    TokenRefreshUpdate {
+        id_token,
+        access_token: refreshed.access_token,
+        refresh_token: refreshed.refresh_token.unwrap_or(current_refresh_token),
+        id_token_error,
     }
 }
 
@@ -204,4 +312,101 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
         .json::<RefreshTokenResponse>()
         .await
         .context("Failed to parse token refresh response")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        chatgpt_tokens_need_refresh_at, merge_refresh_response, resolve_refreshed_id_token,
+        RefreshTokenResponse,
+    };
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    fn jwt_with_exp(exp: i64) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
+        format!("header.{payload}.signature")
+    }
+
+    #[test]
+    fn refresh_required_when_id_token_expired_but_access_token_valid() {
+        let now = 1_800_000_000;
+        let id_token = jwt_with_exp(now - 3_600);
+        let access_token = jwt_with_exp(now + 3_600);
+
+        assert!(chatgpt_tokens_need_refresh_at(
+            &id_token,
+            &access_token,
+            now
+        ));
+    }
+
+    #[test]
+    fn refresh_not_required_when_both_tokens_are_valid() {
+        let now = 1_800_000_000;
+        let id_token = jwt_with_exp(now + 3_600);
+        let access_token = jwt_with_exp(now + 3_600);
+
+        assert!(!chatgpt_tokens_need_refresh_at(
+            &id_token,
+            &access_token,
+            now
+        ));
+    }
+
+    #[test]
+    fn refresh_required_when_access_token_expired() {
+        let now = 1_800_000_000;
+        let id_token = jwt_with_exp(now + 3_600);
+        let access_token = jwt_with_exp(now - 3_600);
+
+        assert!(chatgpt_tokens_need_refresh_at(
+            &id_token,
+            &access_token,
+            now
+        ));
+    }
+
+    #[test]
+    fn expired_id_token_requires_replacement_from_refresh_response() {
+        let now = 1_800_000_000;
+        let current_id_token = jwt_with_exp(now - 3_600);
+
+        let error = resolve_refreshed_id_token(current_id_token, None, now).unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("did not return a fresh id_token"));
+    }
+
+    #[test]
+    fn valid_id_token_can_be_preserved_when_refresh_response_omits_it() {
+        let now = 1_800_000_000;
+        let current_id_token = jwt_with_exp(now + 3_600);
+
+        let resolved = resolve_refreshed_id_token(current_id_token.clone(), None, now).unwrap();
+
+        assert_eq!(resolved, current_id_token);
+    }
+
+    #[test]
+    fn rotated_refresh_token_is_retained_when_id_token_is_missing() {
+        let now = 1_800_000_000;
+        let current_id_token = jwt_with_exp(now - 3_600);
+        let refreshed = RefreshTokenResponse {
+            id_token: None,
+            access_token: "new-access".into(),
+            refresh_token: Some("rotated-refresh".into()),
+        };
+
+        let update = merge_refresh_response(
+            current_id_token.clone(),
+            "old-refresh".into(),
+            refreshed,
+            now,
+        );
+
+        assert_eq!(update.id_token, current_id_token);
+        assert_eq!(update.refresh_token, "rotated-refresh");
+        assert!(update.id_token_error.is_some());
+    }
 }

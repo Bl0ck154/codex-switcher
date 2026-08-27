@@ -1,9 +1,9 @@
 //! Account management Tauri commands
 
 use crate::auth::{
-    add_account, create_chatgpt_account_from_refresh_token, get_active_account,
-    import_from_auth_json, import_from_auth_json_contents, load_accounts, remove_account,
-    read_current_auth, save_accounts, set_active_account, switch_to_account,
+    add_account, create_chatgpt_account_from_refresh_token, ensure_chatgpt_tokens_fresh_locked,
+    get_active_account, import_from_auth_json, import_from_auth_json_contents, load_accounts,
+    read_current_auth, remove_account, save_accounts, set_active_account, switch_to_account,
     sync_active_account_tokens, touch_account, AUTH_OPERATION_LOCK,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
@@ -129,13 +129,11 @@ pub async fn add_account_from_auth_json_text(
 /// Switch to a different account
 #[tauri::command]
 pub async fn switch_account(account_id: String) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || switch_account_by_id(&account_id))
-        .await
-        .map_err(|e| e.to_string())?
+    switch_account_by_id(&account_id).await
 }
 
-pub fn switch_account_by_id(account_id: &str) -> Result<(), String> {
-    let _auth_guard = AUTH_OPERATION_LOCK.blocking_lock();
+pub async fn switch_account_by_id(account_id: &str) -> Result<(), String> {
+    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
     let mut store = load_accounts().map_err(|e| e.to_string())?;
 
     let target_index = store
@@ -143,6 +141,10 @@ pub fn switch_account_by_id(account_id: &str) -> Result<(), String> {
         .iter()
         .position(|account| account.id == account_id)
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+    if store.active_account_id.as_deref() == Some(account_id) {
+        return Ok(());
+    }
 
     ensure_codex_not_running()?;
 
@@ -154,10 +156,12 @@ pub fn switch_account_by_id(account_id: &str) -> Result<(), String> {
         }
     }
 
-    let account = &store.accounts[target_index];
+    let account = ensure_chatgpt_tokens_fresh_locked(&store.accounts[target_index])
+        .await
+        .map_err(|e| e.to_string())?;
 
     // Write to ~/.codex/auth.json
-    switch_to_account(account).map_err(|e| e.to_string())?;
+    switch_to_account(&account).map_err(|e| e.to_string())?;
 
     // Update the active account in our store
     set_active_account(account_id).map_err(|e| e.to_string())?;
