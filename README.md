@@ -200,10 +200,13 @@ pnpm version:minor
 pnpm version:major
 
 # Prepare a release commit and tag
-# This automatically runs the version bump first.
+# This prompts for a short release note and runs the version bump first.
 pnpm release patch
 
 # Prepare and push a release
-# This automatically runs the version bump first.
+# The tag stores the release note for the in-app update prompt.
 pnpm release patch -- --push
+
+# For non-interactive use, pass the note explicitly.
+pnpm release patch -- --push --note "Fixed account switching issues"
 ```
