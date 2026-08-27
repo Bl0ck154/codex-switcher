@@ -1414,11 +1414,14 @@ function App() {
               <button
                 onClick={() => void handleWarmupAll()}
                 disabled={isWarmingAll || accounts.length === 0}
-                className="flex h-10 items-center justify-center gap-2 rounded-lg bg-gray-100 px-3 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-200 disabled:opacity-50 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700 shrink-0 whitespace-nowrap"
+                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors disabled:opacity-50 shrink-0 ${
+                  isWarmingAll
+                    ? "bg-amber-100 text-amber-500 dark:bg-amber-900/30 dark:text-amber-300"
+                    : "bg-amber-50 text-amber-700 hover:bg-amber-100 dark:bg-amber-900/20 dark:text-amber-300 dark:hover:bg-amber-900/40"
+                }`}
                 title={isWarmingAll ? "Warming up all accounts" : "Warm up all accounts"}
               >
                 <span className={isWarmingAll ? "animate-pulse" : ""}>⚡</span>
-                <span>{isWarmingAll ? "Warming..." : "Warm Up All"}</span>
               </button>
               {isAccountSearchEnabled && (
                 <button
