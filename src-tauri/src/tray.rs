@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    LazyLock, Mutex,
+};
 use std::time::Duration;
 
 use tauri::{
@@ -21,6 +24,8 @@ use crate::{
 
 static TRAY_USAGE: LazyLock<Mutex<HashMap<String, UsageInfo>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static TRAY_SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static TRAY_SWITCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const TRAY_ID: &str = "codex-switcher-tray";
 const TRAY_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/tray.png");
@@ -249,34 +254,31 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 return;
             };
 
-            if load_accounts()
-                .ok()
-                .and_then(|store| store.active_account_id)
-                .as_deref()
-                == Some(account_id)
-            {
-                refresh_menu(app);
-                return;
-            }
-
-            if let Err(error) = switch_account_by_id(account_id) {
-                eprintln!("Failed to switch account from tray: {error}");
-                refresh_menu(app);
-                if is_codex_running_switch_block(&error) {
-                    show_main_window(app);
-                    let _ = app.emit(
-                        SWITCH_ACCOUNT_BLOCKED_EVENT,
-                        SwitchAccountBlockedPayload {
-                            account_id: account_id.to_string(),
-                            error,
-                        },
-                    );
+            let app = app.clone();
+            let account_id = account_id.to_string();
+            let request_sequence = TRAY_SWITCH_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+            tauri::async_runtime::spawn(async move {
+                let _tray_switch_guard = TRAY_SWITCH_LOCK.lock().await;
+                if request_sequence != TRAY_SWITCH_SEQUENCE.load(Ordering::Acquire) {
+                    return;
                 }
-                return;
-            }
 
-            refresh_menu(app);
-            let _ = app.emit(ACCOUNTS_CHANGED_EVENT, ());
+                if let Err(error) = switch_account_by_id(&account_id).await {
+                    eprintln!("Failed to switch account from tray: {error}");
+                    refresh_menu(&app);
+                    if is_codex_running_switch_block(&error) {
+                        show_main_window(&app);
+                        let _ = app.emit(
+                            SWITCH_ACCOUNT_BLOCKED_EVENT,
+                            SwitchAccountBlockedPayload { account_id, error },
+                        );
+                    }
+                    return;
+                }
+
+                refresh_menu(&app);
+                let _ = app.emit(ACCOUNTS_CHANGED_EVENT, ());
+            });
         }
     }
 }
