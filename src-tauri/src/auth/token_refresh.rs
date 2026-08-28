@@ -68,7 +68,27 @@ pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<Stor
 pub(crate) async fn ensure_chatgpt_tokens_fresh_locked(
     account: &StoredAccount,
 ) -> Result<StoredAccount> {
-    ensure_chatgpt_tokens_fresh_with_policy_locked(account, true).await
+    match ensure_chatgpt_tokens_fresh_with_policy_locked(account, true).await {
+        Ok(account) => Ok(account),
+        Err(refresh_error) => {
+            // A stale/invalidated refresh token must not make the Switch button
+            // unusable while the stored access token is still accepted. We still
+            // prefer a full refresh first (fresh ID token is best for Codex), but
+            // if that cannot be done, fall back to the latest stored/live account
+            // as long as its access token is still usable.
+            let (fallback, _) = load_account_reconciling_live_auth(&account.id)?;
+            if can_switch_with_existing_access_token(&fallback) {
+                eprintln!(
+                    "[Auth] Full OAuth refresh failed before switch for account {}: {refresh_error:#}. \
+Proceeding with the existing usable access token.",
+                    fallback.name
+                );
+                Ok(fallback)
+            } else {
+                Err(refresh_error)
+            }
+        }
+    }
 }
 
 async fn ensure_chatgpt_tokens_fresh_with_policy_locked(
@@ -258,6 +278,10 @@ fn chatgpt_access_token_needs_refresh(account: &StoredAccount) -> bool {
     }
 }
 
+fn can_switch_with_existing_access_token(account: &StoredAccount) -> bool {
+    !chatgpt_access_token_needs_refresh(account)
+}
+
 fn chatgpt_tokens_need_refresh(account: &StoredAccount) -> bool {
     match &account.auth_data {
         AuthData::ApiKey { .. } => false,
@@ -422,7 +446,8 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
 #[cfg(test)]
 mod tests {
     use super::{
-        chatgpt_access_token_needs_refresh, chatgpt_tokens_need_refresh,
+        can_switch_with_existing_access_token, chatgpt_access_token_needs_refresh,
+        chatgpt_tokens_need_refresh,
         chatgpt_tokens_need_refresh_at, format_token_refresh_error, merge_refresh_response,
         reconcile_active_account_from_auth, resolve_refreshed_id_token, RefreshTokenResponse,
     };
@@ -457,6 +482,40 @@ mod tests {
 
         assert!(!chatgpt_access_token_needs_refresh(&account));
         assert!(chatgpt_tokens_need_refresh(&account));
+    }
+
+    #[test]
+    fn switch_fallback_allows_valid_access_token_when_full_refresh_fails() {
+        let now = chrono::Utc::now().timestamp();
+        let account = StoredAccount::new_chatgpt(
+            "Switch fallback".into(),
+            None,
+            None,
+            None,
+            jwt_with_exp(now - 3_600),
+            jwt_with_exp(now + 3_600),
+            "stale-refresh".into(),
+            None,
+        );
+
+        assert!(can_switch_with_existing_access_token(&account));
+    }
+
+    #[test]
+    fn switch_fallback_rejects_expired_access_token() {
+        let now = chrono::Utc::now().timestamp();
+        let account = StoredAccount::new_chatgpt(
+            "Expired access".into(),
+            None,
+            None,
+            None,
+            jwt_with_exp(now - 3_600),
+            jwt_with_exp(now - 3_600),
+            "stale-refresh".into(),
+            None,
+        );
+
+        assert!(!can_switch_with_existing_access_token(&account));
     }
 
     #[test]
