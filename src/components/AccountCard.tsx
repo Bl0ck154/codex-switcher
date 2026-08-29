@@ -384,7 +384,7 @@ export function AccountCard({
             }`}
             title={switchDisabled ? "Codex is running — click to close it and switch" : undefined}
           >
-            {switching ? "Switching..." : switchDisabled ? "Switch (close Codex)" : "Switch"}
+            {switching ? "Switching..." : "Switch"}
           </button>
         )}
         <button

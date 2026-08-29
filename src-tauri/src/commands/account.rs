@@ -2,10 +2,11 @@
 
 use crate::auth::{
     add_or_replace_account, create_chatgpt_account_from_refresh_token,
-    ensure_chatgpt_tokens_fresh_locked, get_active_account, import_from_auth_json,
-    import_from_auth_json_contents, load_accounts, read_current_auth, remove_account,
-    save_accounts, set_active_account, switch_to_account, sync_active_account_tokens,
-    touch_account, AUTH_OPERATION_LOCK,
+    duplicate_account_requires_confirmation, ensure_chatgpt_tokens_fresh_locked,
+    get_active_account, import_from_auth_json, import_from_auth_json_contents, load_accounts,
+    read_current_auth, remove_account, save_accounts, set_active_account, switch_to_account,
+    sync_active_account_tokens, touch_account, ACCOUNT_REPLACE_CONFIRMATION_PREFIX,
+    AUTH_OPERATION_LOCK,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
@@ -108,10 +109,19 @@ pub async fn add_account_from_file(
     // Import from the file
     let account = import_from_auth_json(&path, name).map_err(|e| e.to_string())?;
 
-    // Expired duplicates are replaced automatically. Healthy duplicates require
-    // an explicit force_replace retry after frontend confirmation.
-    let stored = add_or_replace_account(account, force_replace.unwrap_or(false))
-        .map_err(|e| e.to_string())?;
+    let force_replace = force_replace.unwrap_or(false);
+    if !force_replace
+        && duplicate_account_requires_confirmation(&account)
+            .await
+            .map_err(|e| e.to_string())?
+    {
+        return Err(format!(
+            "{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}",
+            account.name
+        ));
+    }
+
+    let stored = add_or_replace_account(account, true).map_err(|e| e.to_string())?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
@@ -126,8 +136,19 @@ pub async fn add_account_from_auth_json_text(
     force_replace: Option<bool>,
 ) -> Result<AccountInfo, String> {
     let account = import_from_auth_json_contents(&contents, name).map_err(|e| e.to_string())?;
-    let stored = add_or_replace_account(account, force_replace.unwrap_or(false))
-        .map_err(|e| e.to_string())?;
+    let force_replace = force_replace.unwrap_or(false);
+    if !force_replace
+        && duplicate_account_requires_confirmation(&account)
+            .await
+            .map_err(|e| e.to_string())?
+    {
+        return Err(format!(
+            "{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}",
+            account.name
+        ));
+    }
+
+    let stored = add_or_replace_account(account, true).map_err(|e| e.to_string())?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();

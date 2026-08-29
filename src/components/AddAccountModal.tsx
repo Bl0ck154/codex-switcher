@@ -80,7 +80,7 @@ export function AddAccountModal({
       setOauthPending(true);
       setLoading(false);
 
-      // Wait for completion. Expired duplicates are replaced by the backend;
+      // Wait for completion. Stale OAuth duplicates are replaced by the backend;
       // healthy duplicates return a confirmation request and keep the fresh
       // credentials staged so we can retry without another browser login.
       await onCompleteOAuth(false);
@@ -306,8 +306,8 @@ export function AddAccountModal({
               <div className="font-medium mb-1">Replace existing account?</div>
               <div>
                 <span className="font-medium">{replaceConfirmation.accountName}</span> already
-                exists and appears to be active. Replace it with the newly authenticated account
-                anyway?
+                exists and its saved session still appears usable. Replace it with the newly
+                authenticated account anyway?
               </div>
             </div>
           )}

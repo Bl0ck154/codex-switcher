@@ -6,8 +6,9 @@ use tokio::sync::oneshot;
 
 use crate::auth::oauth_server::{start_oauth_login, wait_for_oauth_login, OAuthLoginResult};
 use crate::auth::{
-    add_or_replace_account, load_accounts, set_active_account, switch_to_account, touch_account,
-    ACCOUNT_REPLACE_CONFIRMATION_PREFIX, AUTH_OPERATION_LOCK,
+    add_or_replace_account, duplicate_account_requires_confirmation, load_accounts,
+    set_active_account, switch_to_account, touch_account, ACCOUNT_REPLACE_CONFIRMATION_PREFIX,
+    AUTH_OPERATION_LOCK,
 };
 use crate::types::{AccountInfo, OAuthLoginInfo, StoredAccount};
 
@@ -51,9 +52,9 @@ pub async fn start_login(account_name: String) -> Result<OAuthLoginInfo, String>
 
 /// Wait for the OAuth login to complete and add the account.
 ///
-/// Expired duplicates are replaced automatically. A healthy duplicate is staged
-/// in memory and returns ACCOUNT_REPLACE_CONFIRMATION_REQUIRED:<name>; the UI can
-/// retry with force_replace=true without making the user log in again.
+/// Duplicates with a stale OAuth session are replaced automatically. A healthy
+/// duplicate is staged in memory and returns ACCOUNT_REPLACE_CONFIRMATION_REQUIRED:<name>;
+/// the UI can retry with force_replace=true without making the user log in again.
 #[tauri::command]
 pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, String> {
     let force_replace = force_replace.unwrap_or(false);
@@ -78,19 +79,20 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
             .map_err(|e| e.to_string())?
     };
 
-    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    if !force_replace
+        && duplicate_account_requires_confirmation(&account)
+            .await
+            .map_err(|e| e.to_string())?
+    {
+        let account_name = account.name.clone();
+        PENDING_COMPLETED_ACCOUNT.lock().unwrap().replace(account);
+        return Err(format!(
+            "{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{account_name}"
+        ));
+    }
 
-    let stored = match add_or_replace_account(account.clone(), force_replace) {
-        Ok(stored) => stored,
-        Err(err) => {
-            let message = err.to_string();
-            if !force_replace && message.starts_with(ACCOUNT_REPLACE_CONFIRMATION_PREFIX) {
-                let mut staged = PENDING_COMPLETED_ACCOUNT.lock().unwrap();
-                *staged = Some(account);
-            }
-            return Err(message);
-        }
-    };
+    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    let stored = add_or_replace_account(account, true).map_err(|e| e.to_string())?;
 
     // Make it active and switch to it
     set_active_account(&stored.id).map_err(|e| e.to_string())?;

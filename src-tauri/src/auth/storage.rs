@@ -163,27 +163,6 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
 
 pub const ACCOUNT_REPLACE_CONFIRMATION_PREFIX: &str = "ACCOUNT_REPLACE_CONFIRMATION_REQUIRED:";
 
-fn account_subscription_expiry(account: &StoredAccount) -> Option<DateTime<Utc>> {
-    account
-        .subscription_expires_at
-        .or_else(|| match &account.auth_data {
-            AuthData::ChatGPT { id_token, .. } => {
-                parse_chatgpt_id_token_claims(id_token).subscription_expires_at
-            }
-            AuthData::ApiKey { .. } => None,
-        })
-}
-
-pub fn account_is_expired(account: &StoredAccount) -> bool {
-    account_subscription_expiry(account)
-        .map(|expires_at| expires_at <= Utc::now())
-        .unwrap_or(false)
-}
-
-fn duplicate_requires_confirmation(existing: &StoredAccount, force_replace: bool) -> bool {
-    !force_replace && !account_is_expired(existing)
-}
-
 fn replace_account_in_store(
     store: &mut AccountsStore,
     existing_index: usize,
@@ -197,11 +176,10 @@ fn replace_account_in_store(
     replacement
 }
 
-/// Add an account, automatically replacing an expired duplicate.
+/// Add or replace an account after the caller has made the duplicate-health decision.
 ///
-/// A non-expired duplicate requires an explicit force_replace=true retry so the
-/// UI can ask the user before overwriting working credentials. Replacement keeps
-/// the original internal account ID, creation time and last-used timestamp.
+/// Duplicate replacement requires force_replace=true. Replacement keeps the
+/// original internal account ID, creation time and last-used timestamp.
 pub fn add_or_replace_account(
     account: StoredAccount,
     force_replace: bool,
@@ -209,8 +187,7 @@ pub fn add_or_replace_account(
     let mut store = load_accounts()?;
 
     if let Some(existing_index) = store.accounts.iter().position(|a| a.name == account.name) {
-        let existing = &store.accounts[existing_index];
-        if duplicate_requires_confirmation(existing, force_replace) {
+        if !force_replace {
             anyhow::bail!("{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}", account.name);
         }
 
@@ -432,10 +409,7 @@ pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        account_is_expired, duplicate_requires_confirmation, replace_account_in_store,
-        sync_active_account_tokens,
-    };
+    use super::{replace_account_in_store, sync_active_account_tokens};
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::Engine;
     use chrono::{Duration, Utc};
@@ -592,25 +566,6 @@ mod tests {
         assert_eq!(account_id.as_deref(), Some("workspace-a"));
         assert_eq!(refresh_token(&store.accounts[0]), "refresh-a2");
     }
-    #[test]
-    fn expired_duplicate_does_not_require_confirmation() {
-        let mut expired = account("A", "workspace-a", "old");
-        expired.subscription_expires_at = Some(Utc::now() - Duration::minutes(1));
-
-        assert!(account_is_expired(&expired));
-        assert!(!duplicate_requires_confirmation(&expired, false));
-    }
-
-    #[test]
-    fn healthy_duplicate_requires_confirmation_unless_forced() {
-        let mut healthy = account("A", "workspace-a", "old");
-        healthy.subscription_expires_at = Some(Utc::now() + Duration::hours(1));
-
-        assert!(!account_is_expired(&healthy));
-        assert!(duplicate_requires_confirmation(&healthy, false));
-        assert!(!duplicate_requires_confirmation(&healthy, true));
-    }
-
     #[test]
     fn replacing_duplicate_preserves_internal_identity_and_history() {
         let mut existing = account("A", "workspace-a", "old");
