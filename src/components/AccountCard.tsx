@@ -258,7 +258,7 @@ export function AccountCard({
 
   return (
     <div
-      className={`relative rounded-xl border p-5 transition-all duration-200 ${
+      className={`relative flex h-full flex-col rounded-xl border p-5 transition-all duration-200 ${
         account.is_active
           ? "bg-white dark:bg-gray-900 border-emerald-400 shadow-sm"
           : "bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600"
@@ -365,7 +365,7 @@ export function AccountCard({
       </div>
 
       {/* Actions */}
-      <div className="flex gap-2 mt-3">
+      <div className="mt-auto flex gap-2 pt-3">
         {account.is_active ? (
           <button
             disabled

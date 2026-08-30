@@ -42,29 +42,22 @@ function formatUsageError(error: string): { title: string; message: string } {
     error.includes("saved session is out of date")
   ) {
     return {
-      title: "Switcher session needs attention",
-      message: error.includes("saved session is out of date")
-        ? error
-        : "Codex Switcher's saved session is out of date. Your Codex app may still be signed in; retry here before signing out of Codex.",
+      title: "Switcher session expired",
+      message: "Codex may still work. Re-add this account in Switcher if needed.",
     };
   }
 
   if (error.includes("refresh_token_reused") || error.includes("outdated refresh token")) {
     return {
       title: "Switcher token is stale",
-      message: error.includes("outdated refresh token")
-        ? error
-        : "Codex already rotated this refresh token. Close Codex before switching accounts, then retry or re-add the account once if needed.",
+      message: "Codex may still work. Re-add this account if switching fails.",
     };
   }
 
-  // Older builds may still surface a raw backend JSON payload. Never dump that
-  // into the account card; keep the UI concise while logs retain the details.
-  if (error.includes("Token refresh failed:") && error.includes('"error"')) {
+  if (error.includes("Token refresh failed:") && error.includes("\"error\"")) {
     return {
-      title: "Couldn’t refresh Switcher session",
-      message:
-        "The saved Switcher credentials could not be refreshed. Your Codex session may still be valid. Retry usage before re-authenticating.",
+      title: "Could not refresh Switcher",
+      message: "Codex may still work. Retry here before re-authenticating.",
     };
   }
 
