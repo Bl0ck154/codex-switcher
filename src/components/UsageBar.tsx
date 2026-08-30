@@ -42,22 +42,22 @@ function formatUsageError(error: string): { title: string; message: string } {
     error.includes("saved session is out of date")
   ) {
     return {
-      title: "Switcher session expired",
-      message: "Codex may still work. Re-add this account in Switcher if needed.",
+      title: "Session expired",
+      message: "Re-authenticate this account.",
     };
   }
 
   if (error.includes("refresh_token_reused") || error.includes("outdated refresh token")) {
     return {
-      title: "Switcher token is stale",
-      message: "Codex may still work. Re-add this account if switching fails.",
+      title: "Session expired",
+      message: "Re-authenticate this account.",
     };
   }
 
   if (error.includes("Token refresh failed:") && error.includes("\"error\"")) {
     return {
       title: "Could not refresh Switcher",
-      message: "Codex may still work. Retry here before re-authenticating.",
+      message: "Retry here before re-authenticating.",
     };
   }
 
