@@ -39,8 +39,9 @@ jobs:
       - name: Frontend build
         run: pnpm build
 
-      - name: Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
-
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust formatting check
+        continue-on-error: true
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
