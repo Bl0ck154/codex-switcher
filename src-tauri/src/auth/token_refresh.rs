@@ -298,6 +298,9 @@ fn refresh_error_invalidates_saved_session(error: &anyhow::Error) -> bool {
         || message.contains("saved session is out of date")
         || message.contains("outdated refresh token")
         || message.contains("your session has ended")
+        || message.contains("invalid refresh token")
+        || message.contains("refresh token is invalid")
+        || message.contains("invalid_grant")
 }
 
 /// Decide whether replacing a duplicate account should require user confirmation.
@@ -442,7 +445,7 @@ fn format_token_refresh_error(status: reqwest::StatusCode, body: &str) -> String
     let code = details.and_then(|error| error.code.as_deref());
 
     match code {
-        Some("refresh_token_invalidated") => {
+        Some("refresh_token_invalidated") | Some("invalid_grant") => {
             "Codex Switcher's saved session is out of date. The Codex app may still be signed in. Re-authenticate this account in Switcher only if usage or account switching actually stops working."
                 .to_string()
         }
@@ -599,10 +602,22 @@ mod tests {
         let reused = anyhow::anyhow!(
             "Codex Switcher has an outdated refresh token because Codex already rotated it."
         );
+        let invalid_refresh_token = anyhow::anyhow!(
+            "Could not refresh the saved Codex Switcher session (401 Unauthorized). Invalid refresh token."
+        );
+        let invalid_grant = anyhow::anyhow!(
+            "Could not refresh the saved Codex Switcher session (401 Unauthorized). invalid_grant"
+        );
+        let generic_unauthorized = anyhow::anyhow!(
+            "Could not refresh the saved Codex Switcher session (401 Unauthorized). Please try again."
+        );
         let transient = anyhow::anyhow!("Failed to send token refresh request: timed out");
 
         assert!(refresh_error_invalidates_saved_session(&invalidated));
         assert!(refresh_error_invalidates_saved_session(&reused));
+        assert!(refresh_error_invalidates_saved_session(&invalid_refresh_token));
+        assert!(refresh_error_invalidates_saved_session(&invalid_grant));
+        assert!(!refresh_error_invalidates_saved_session(&generic_unauthorized));
         assert!(!refresh_error_invalidates_saved_session(&transient));
     }
 
@@ -779,6 +794,15 @@ mod tests {
         assert!(message.contains("saved session is out of date"));
         assert!(message.contains("Codex app may still be signed in"));
         assert!(!message.contains("{\"error\""));
+    }
+
+    #[test]
+    fn invalid_grant_error_is_human_readable() {
+        let body = r#"{"error":{"message":"Invalid refresh token.","code":"invalid_grant"}}"#;
+        let message = format_token_refresh_error(reqwest::StatusCode::UNAUTHORIZED, body);
+
+        assert!(message.contains("saved session is out of date"));
+        assert!(!message.contains("Invalid refresh token"));
     }
 
     #[test]
