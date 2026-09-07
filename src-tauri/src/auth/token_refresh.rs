@@ -3,6 +3,10 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::Utc;
+use std::{
+    collections::HashSet,
+    sync::{Mutex, OnceLock},
+};
 use tokio::time::{sleep, Duration};
 
 use super::{
@@ -16,6 +20,33 @@ use crate::types::{
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const EXPIRY_SKEW_SECONDS: i64 = 60;
+
+static STALE_CHATGPT_SESSION_IDS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn stale_chatgpt_session_ids() -> &'static Mutex<HashSet<String>> {
+    STALE_CHATGPT_SESSION_IDS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn mark_saved_session_stale(account_id: &str) {
+    stale_chatgpt_session_ids()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(account_id.to_string());
+}
+
+fn clear_saved_session_stale(account_id: &str) {
+    stale_chatgpt_session_ids()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(account_id);
+}
+
+fn take_saved_session_stale(account_id: &str) -> bool {
+    stale_chatgpt_session_ids()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(account_id)
+}
 
 #[derive(Debug, serde::Deserialize)]
 struct RefreshTokenResponse {
@@ -169,7 +200,18 @@ async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<Stored
         anyhow::bail!("Missing refresh token for account {}", current.name);
     }
 
-    let refreshed = refresh_tokens_with_refresh_token(&current_refresh_token).await?;
+    let refreshed = match refresh_tokens_with_refresh_token(&current_refresh_token).await {
+        Ok(refreshed) => {
+            clear_saved_session_stale(&current.id);
+            refreshed
+        }
+        Err(error) => {
+            if refresh_error_invalidates_saved_session(&error) {
+                mark_saved_session_stale(&current.id);
+            }
+            return Err(error);
+        }
+    };
     let next = merge_refresh_response(
         current_id_token,
         current_refresh_token,
@@ -333,6 +375,18 @@ pub async fn duplicate_account_requires_confirmation(candidate: &StoredAccount) 
 
     if matches!(existing.auth_data, AuthData::ApiKey { .. }) {
         return Ok(true);
+    }
+
+    // Usage polling may already have proved that the saved refresh token is
+    // terminally invalid. Preserve that fact across the re-auth flow so an active
+    // account is not misclassified as healthy merely because Codex is currently
+    // running and refresh_chatgpt_tokens() intentionally avoids rotating its token.
+    if take_saved_session_stale(&existing.id) {
+        eprintln!(
+            "[Auth] Existing duplicate account {} was already observed with a stale OAuth session; replacing without confirmation",
+            existing.name
+        );
+        return Ok(false);
     }
 
     match refresh_chatgpt_tokens(&existing).await {
@@ -523,9 +577,10 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
 mod tests {
     use super::{
         can_switch_with_existing_access_token, chatgpt_access_token_needs_refresh,
-        chatgpt_tokens_need_refresh, chatgpt_tokens_need_refresh_at, format_token_refresh_error,
-        merge_refresh_response, reconcile_active_account_from_auth,
-        refresh_error_invalidates_saved_session, resolve_refreshed_id_token, RefreshTokenResponse,
+        chatgpt_tokens_need_refresh, chatgpt_tokens_need_refresh_at, clear_saved_session_stale,
+        format_token_refresh_error, mark_saved_session_stale, merge_refresh_response,
+        reconcile_active_account_from_auth, refresh_error_invalidates_saved_session,
+        resolve_refreshed_id_token, take_saved_session_stale, RefreshTokenResponse,
     };
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -619,6 +674,16 @@ mod tests {
         assert!(refresh_error_invalidates_saved_session(&invalid_grant));
         assert!(!refresh_error_invalidates_saved_session(&generic_unauthorized));
         assert!(!refresh_error_invalidates_saved_session(&transient));
+    }
+
+    #[test]
+    fn observed_stale_session_marker_is_consumed_once() {
+        let account_id = "test-observed-stale-session";
+        clear_saved_session_stale(account_id);
+        mark_saved_session_stale(account_id);
+
+        assert!(take_saved_session_stale(account_id));
+        assert!(!take_saved_session_stale(account_id));
     }
 
     #[test]
