@@ -17,6 +17,7 @@ interface AccountCardProps {
   onRename: (newName: string) => Promise<void>;
   switching?: boolean;
   switchDisabled?: boolean;
+  codexRunning?: boolean;
   warmingUp?: boolean;
   masked?: boolean;
   onToggleMask?: () => void;
@@ -103,6 +104,7 @@ export function AccountCard({
   onRename,
   switching,
   switchDisabled,
+  codexRunning = false,
   warmingUp,
   masked = false,
   onToggleMask,
@@ -377,14 +379,19 @@ export function AccountCard({
           <button
             onClick={onSwitch}
             disabled={switching || switchDisabled}
-            className={`flex-1 px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 ${
-              switchDisabled
-                ? "bg-gray-200 dark:bg-gray-800 text-gray-400 dark:text-gray-500 cursor-not-allowed"
+            className={`flex-1 flex items-center justify-center gap-1.5 px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+              codexRunning
+                ? "bg-orange-100 hover:bg-orange-200 dark:bg-orange-900/30 dark:hover:bg-orange-900/50 text-orange-800 dark:text-orange-300"
                 : "bg-gray-900 hover:bg-gray-800 dark:bg-gray-100 dark:hover:bg-gray-200 text-white dark:text-gray-900"
             }`}
-            title={switchDisabled ? "Close all Codex processes first" : undefined}
+            title={codexRunning ? "Force close running Codex processes and switch account" : undefined}
           >
-            {switching ? "Switching..." : switchDisabled ? "Codex Running" : "Switch"}
+            {codexRunning && !switching && (
+              <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.3 3.9 1.8 18.1A2 2 0 003.5 21h17a2 2 0 001.7-2.9L13.7 3.9a2 2 0 00-3.4 0Z" />
+              </svg>
+            )}
+            {switching ? "Switching..." : "Switch"}
           </button>
         )}
         <button

@@ -194,7 +194,7 @@ function App() {
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [processInfo, setProcessInfo] = useState<CodexProcessInfo | null>(null);
-  const [pendingTraySwitchAccountId, setPendingTraySwitchAccountId] = useState<string | null>(null);
+  const [pendingSwitchAccountId, setPendingSwitchAccountId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isOpeningCodex, setIsOpeningCodex] = useState(false);
   const [isExportingSlim, setIsExportingSlim] = useState(false);
@@ -524,17 +524,29 @@ function App() {
   }, []);
 
   const handleSwitch = async (accountId: string) => {
-    // Check processes before switching
-    const latestProcessInfo = await checkProcesses();
-    if (latestProcessInfo && !latestProcessInfo.can_switch) {
-      return;
-    }
-
     try {
       setSwitchingId(accountId);
+      const latestProcessInfo = await checkProcesses();
+      if (!latestProcessInfo) {
+        showWarmupToast("Could not check running Codex processes. Try again.", true);
+        return;
+      }
+      if (!latestProcessInfo.can_switch) {
+        setPendingSwitchAccountId(accountId);
+        setForceCloseConfirmOpen(true);
+        return;
+      }
+
       await switchAccount(accountId);
     } catch (err) {
       console.error("Failed to switch account:", err);
+      const latestProcessInfo = await checkProcesses();
+      if (latestProcessInfo && !latestProcessInfo.can_switch) {
+        setPendingSwitchAccountId(accountId);
+        setForceCloseConfirmOpen(true);
+      } else {
+        showWarmupToast(`Switch failed: ${formatWarmupError(err)}`, true);
+      }
     } finally {
       setSwitchingId(null);
     }
@@ -629,7 +641,7 @@ function App() {
           const accountId = event.payload?.accountId;
 
           if (accountId && latestProcessInfo && !latestProcessInfo.can_switch) {
-            setPendingTraySwitchAccountId(accountId);
+            setPendingSwitchAccountId(accountId);
             setForceCloseConfirmOpen(true);
             return;
           }
@@ -638,7 +650,7 @@ function App() {
             try {
               setSwitchingId(accountId);
               await switchAccount(accountId);
-              setPendingTraySwitchAccountId(null);
+              setPendingSwitchAccountId(null);
               showWarmupToast("Switched account from tray.");
             } catch (err) {
               console.error("Failed to retry tray account switch:", err);
@@ -703,7 +715,7 @@ function App() {
   );
 
   const handleForceCloseConfirm = useCallback(async () => {
-    const accountId = pendingTraySwitchAccountId;
+    const accountId = pendingSwitchAccountId;
     const latestProcessInfo = await forceCloseCodexProcesses();
 
     if (!accountId) {
@@ -711,18 +723,18 @@ function App() {
     }
 
     if (!latestProcessInfo?.can_switch) {
-      setPendingTraySwitchAccountId(null);
+      setPendingSwitchAccountId(null);
       return;
     }
 
     try {
       setSwitchingId(accountId);
       await switchAccount(accountId);
-      setPendingTraySwitchAccountId(null);
+      setPendingSwitchAccountId(null);
       showWarmupToast("Switched account after force closing Codex.");
     } catch (err) {
       console.error("Failed to switch account after force close:", err);
-      setPendingTraySwitchAccountId(null);
+      setPendingSwitchAccountId(null);
       showWarmupToast(
         `Switch failed after force close: ${formatWarmupError(err)}`,
         true
@@ -733,7 +745,7 @@ function App() {
   }, [
     forceCloseCodexProcesses,
     formatWarmupError,
-    pendingTraySwitchAccountId,
+    pendingSwitchAccountId,
     showWarmupToast,
     switchAccount,
   ]);
@@ -1161,11 +1173,11 @@ function App() {
   const activeAccount = accounts.find((a) => a.is_active);
   const otherAccounts = accounts.filter((a) => !a.is_active);
   const hasRunningProcesses = processInfo && processInfo.count > 0;
-  const pendingTraySwitchAccount = useMemo(
-    () => accounts.find((account) => account.id === pendingTraySwitchAccountId),
-    [accounts, pendingTraySwitchAccountId]
+  const pendingSwitchAccount = useMemo(
+    () => accounts.find((account) => account.id === pendingSwitchAccountId),
+    [accounts, pendingSwitchAccountId]
   );
-  const forceCloseConfirmLabel = pendingTraySwitchAccount
+  const forceCloseConfirmLabel = pendingSwitchAccount
     ? "Force close and switch account"
     : "Force close running Codex processes";
 
@@ -1355,7 +1367,7 @@ function App() {
                       {hasRunningProcesses && (
                         <button
                           onClick={() => {
-                            setPendingTraySwitchAccountId(null);
+                            setPendingSwitchAccountId(null);
                             setForceCloseConfirmOpen(true);
                           }}
                           disabled={isForceClosingCodex}
@@ -1749,7 +1761,8 @@ function App() {
                     }
                     onRename={(newName) => renameAccount(activeAccount.id, newName)}
                     switching={switchingId === activeAccount.id}
-                    switchDisabled={hasRunningProcesses ?? false}
+                    switchDisabled={switchingId !== null || isForceClosingCodex}
+                    codexRunning={hasRunningProcesses ?? false}
                     warmingUp={
                       isWarmingAll ||
                       warmingUpId === activeAccount.id ||
@@ -1845,7 +1858,8 @@ function App() {
                       }
                       onRename={(newName) => renameAccount(account.id, newName)}
                       switching={switchingId === account.id}
-                      switchDisabled={hasRunningProcesses ?? false}
+                      switchDisabled={switchingId !== null || isForceClosingCodex}
+                      codexRunning={hasRunningProcesses ?? false}
                       warmingUp={
                         isWarmingAll ||
                         warmingUpId === account.id ||
@@ -1913,11 +1927,11 @@ function App() {
                 {(processInfo?.count ?? 0) === 1 ? "" : "es"} that currently
                 block account switching.
               </p>
-              {pendingTraySwitchAccount && (
+              {pendingSwitchAccount && (
                 <p className="text-sm text-gray-600 dark:text-gray-300">
                   After closing Codex, Codex Switcher will switch to{" "}
                   <span className="font-medium text-gray-900 dark:text-gray-100">
-                    {pendingTraySwitchAccount.name}
+                    {pendingSwitchAccount.name}
                   </span>
                   .
                 </p>
@@ -1929,7 +1943,7 @@ function App() {
             <div className="flex justify-end gap-3 p-5 border-t border-gray-100 dark:border-gray-800">
               <button
                 onClick={() => {
-                  setPendingTraySwitchAccountId(null);
+                  setPendingSwitchAccountId(null);
                   setForceCloseConfirmOpen(false);
                 }}
                 disabled={isForceClosingCodex}
