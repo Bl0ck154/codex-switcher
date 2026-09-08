@@ -2,6 +2,10 @@
 
 use std::process::Command;
 
+#[path = "desktop_reopen.rs"]
+mod desktop_reopen;
+pub use desktop_reopen::*;
+
 #[cfg(any(windows, test))]
 use anyhow::Context;
 
@@ -54,6 +58,7 @@ pub struct KillCodexProcessesResult {
     pub killed_pids: Vec<u32>,
     /// Process IDs that could not be terminated.
     pub failed_pids: Vec<u32>,
+    pub reopen_token: Option<String>,
 }
 
 #[cfg(unix)]
@@ -98,14 +103,25 @@ pub(crate) fn is_codex_running_switch_block(error: &str) -> bool {
 
 /// Force-close active Codex processes that currently block account switching.
 #[tauri::command]
-pub async fn kill_codex_processes() -> Result<KillCodexProcessesResult, String> {
-    tokio::task::spawn_blocking(kill_codex_processes_blocking)
-        .await
-        .map_err(|e| e.to_string())?
+pub async fn kill_codex_processes(
+    reopen_desktop: Option<bool>,
+) -> Result<KillCodexProcessesResult, String> {
+    tokio::task::spawn_blocking(move || {
+        kill_codex_processes_blocking(reopen_desktop.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-fn kill_codex_processes_blocking() -> Result<KillCodexProcessesResult, String> {
+fn kill_codex_processes_blocking(reopen_desktop: bool) -> Result<KillCodexProcessesResult, String> {
     let (pids, _) = find_codex_processes().map_err(|e| e.to_string())?;
+    // Capture exact desktop identities before termination. Detection failure must
+    // never prevent the existing close-only flow.
+    let desktops = if reopen_desktop {
+        desktop_reopen::capture_desktops(&pids).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     let targeted_count = pids.len();
     let mut killed_pids = Vec::new();
     let mut failed_pids = Vec::new();
@@ -170,10 +186,12 @@ fn kill_codex_processes_blocking() -> Result<KillCodexProcessesResult, String> {
         failed_pids = still_failed;
     }
 
+    let reopen_token = desktop_reopen::remember_closed_desktops(desktops, &killed_pids);
     Ok(KillCodexProcessesResult {
         targeted_count,
         killed_pids,
         failed_pids,
+        reopen_token,
     })
 }
 
@@ -542,6 +560,13 @@ fn read_macos_app_bundle_identifier(command: &str, process_name: Option<&str>) -
 
 #[cfg(windows)]
 fn find_windows_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
+    Ok(classify_windows_codex_processes(
+        &read_windows_codex_processes()?,
+    ))
+}
+
+#[cfg(windows)]
+fn read_windows_codex_processes() -> anyhow::Result<Vec<WindowsCodexProcess>> {
     // tasklist counts every Electron helper (`--type=gpu-process`, crashpad, renderer, etc.),
     // which inflates the badge and incorrectly blocks switching. Use PowerShell so we can inspect
     // the command line and only count live top-level app instances.
@@ -587,9 +612,7 @@ Get-CimInstance Win32_Process |
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let processes = parse_windows_codex_processes(&stdout)?;
-
-    Ok(classify_windows_codex_processes(&processes))
+    parse_windows_codex_processes(&stdout)
 }
 
 #[cfg(any(windows, test))]
