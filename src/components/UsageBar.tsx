@@ -161,8 +161,9 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
 
   const hasPrimary = usage.primary_used_percent !== null && usage.primary_used_percent !== undefined;
   const hasSecondary = usage.secondary_used_percent !== null && usage.secondary_used_percent !== undefined;
+  const lunaReserve = usage.luna_reserve ?? null;
 
-  if (!hasPrimary && !hasSecondary) {
+  if (!hasPrimary && !hasSecondary && !lunaReserve) {
     return (
       <div className="text-xs text-gray-400 dark:text-gray-500 italic py-1">
         No rate limit data
@@ -187,6 +188,20 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
           windowMinutes={usage.secondary_window_minutes}
           resetsAt={usage.secondary_resets_at}
         />
+      )}
+      {lunaReserve && (
+        <div className="space-y-1">
+          <RateLimitBar
+            label={`GPT Reserve • ${lunaReserve.normal_model_slug || "Luna"}`}
+            usedPercent={lunaReserve.used_percent}
+            resetsAt={lunaReserve.resets_at}
+          />
+          <div className="text-[11px] text-gray-500 dark:text-gray-400">
+            {lunaReserve.allowed && !lunaReserve.limit_reached && lunaReserve.used_percent < 100
+              ? "Luna fallback available when normal Codex quota is exhausted"
+              : "Luna Reserve unavailable or exhausted"}
+          </div>
+        </div>
       )}
       {usage.credits_balance && (
         <div className="text-xs text-gray-500 dark:text-gray-400">

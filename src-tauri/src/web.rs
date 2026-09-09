@@ -219,7 +219,7 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
             to_json(set_masked_account_ids(args.ids).await?)
         }
         "check_codex_processes" => to_json(check_codex_processes().await?),
-        "kill_codex_processes" => to_json(kill_codex_processes().await?),
+        "kill_codex_processes" => to_json(kill_codex_processes(None).await?),
         _ => Err(format!("Unsupported web command: {command}")),
     }
 }

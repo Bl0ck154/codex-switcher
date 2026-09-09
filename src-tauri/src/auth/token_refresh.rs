@@ -179,10 +179,6 @@ async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<Stored
     let (current, is_active) = load_account_reconciling_live_auth(&account.id)?;
 
     if is_active && crate::commands::process::ensure_codex_not_running().is_err() {
-        println!(
-            "[Auth] Using the running app's live credentials for active account {}",
-            current.name
-        );
         return Ok(current);
     }
 
@@ -232,6 +228,7 @@ async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<Stored
         claims.plan_type,
         claims.subscription_expires_at,
     )?;
+    println!("[Auth] Refreshed OAuth tokens for: {}", updated.name);
 
     // Refresh tokens can be single-use. Persist a rotated replacement before
     // reporting an unusable ID token, so a later retry can still recover.
@@ -670,9 +667,13 @@ mod tests {
 
         assert!(refresh_error_invalidates_saved_session(&invalidated));
         assert!(refresh_error_invalidates_saved_session(&reused));
-        assert!(refresh_error_invalidates_saved_session(&invalid_refresh_token));
+        assert!(refresh_error_invalidates_saved_session(
+            &invalid_refresh_token
+        ));
         assert!(refresh_error_invalidates_saved_session(&invalid_grant));
-        assert!(!refresh_error_invalidates_saved_session(&generic_unauthorized));
+        assert!(!refresh_error_invalidates_saved_session(
+            &generic_unauthorized
+        ));
         assert!(!refresh_error_invalidates_saved_session(&transient));
     }
 

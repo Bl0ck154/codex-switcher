@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAccounts } from "./hooks/useAccounts";
+import { useDesktopReopen } from "./hooks/useDesktopReopen";
+import { SettingsModal } from "./components/SettingsModal";
+import { finishForceClose, type DesktopReopenPreference } from "./lib/desktopReopen";
 import { useForceCloseCodexProcesses } from "./hooks/useForceCloseCodexProcesses";
 import { AccountCard, AddAccountModal, UpdateChecker } from "./components";
 import type { AccountWithUsage, CodexProcessInfo, DockDisplayMode, UsageInfo } from "./types";
@@ -194,7 +197,7 @@ function App() {
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [processInfo, setProcessInfo] = useState<CodexProcessInfo | null>(null);
-  const [pendingTraySwitchAccountId, setPendingTraySwitchAccountId] = useState<string | null>(null);
+  const [pendingSwitchAccountId, setPendingSwitchAccountId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isOpeningCodex, setIsOpeningCodex] = useState(false);
   const [isExportingSlim, setIsExportingSlim] = useState(false);
@@ -242,6 +245,28 @@ function App() {
   >("deadline_asc");
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
   const [isNavMenuOpen, setIsNavMenuOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isCompletingForceClose, setIsCompletingForceClose] = useState(false);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const forceCloseInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event").then(async ({ listen }) => {
+      const stop = await listen("desktop-reopen-settings-requested", () => {
+        setIsSettingsOpen(true);
+      });
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch((err) => console.error("Failed to listen for settings requests:", err));
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
   const navMenuRef = useRef<HTMLDivElement | null>(null);
   const [themeMode, setThemeMode] = useState<ThemeMode>(readStoredTheme);
@@ -528,13 +553,24 @@ function App() {
     // existing force-close confirmation flow and automatically retry the switch.
     const latestProcessInfo = await checkProcesses();
     if (latestProcessInfo && !latestProcessInfo.can_switch) {
-      setPendingTraySwitchAccountId(accountId);
+      setPendingSwitchAccountId(accountId);
       setForceCloseConfirmOpen(true);
       return;
     }
 
     try {
       setSwitchingId(accountId);
+      const latestProcessInfo = await checkProcesses();
+      if (!latestProcessInfo) {
+        showWarmupToast("Could not check running Codex processes. Try again.", true);
+        return;
+      }
+      if (!latestProcessInfo.can_switch) {
+        setPendingSwitchAccountId(accountId);
+        setForceCloseConfirmOpen(true);
+        return;
+      }
+
       await switchAccount(accountId);
       showWarmupToast("Switched account.");
     } catch (err) {
@@ -573,8 +609,9 @@ function App() {
   };
 
   const showWarmupToast = useCallback((message: string, isError = false) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setWarmupToast({ message, isError });
-    setTimeout(() => setWarmupToast(null), 2500);
+    toastTimerRef.current = setTimeout(() => setWarmupToast(null), isError ? 10000 : 2500);
   }, []);
 
   const formatWarmupError = useCallback((err: unknown) => {
@@ -610,7 +647,7 @@ function App() {
   const {
     forceCloseConfirmOpen,
     setForceCloseConfirmOpen,
-    isForceClosingCodex,
+    isForceClosingCodex: isKillingCodex,
     forceCloseCodexProcesses,
   } = useForceCloseCodexProcesses({
     processCount: processInfo?.count ?? 0,
@@ -618,6 +655,16 @@ function App() {
     showToast: showWarmupToast,
     formatError: formatWarmupError,
   });
+  const isForceClosingCodex = isKillingCodex || isCompletingForceClose;
+  const desktopReopen = useDesktopReopen(forceCloseConfirmOpen);
+  const saveDesktopReopenPreference = (value: DesktopReopenPreference) => {
+    try {
+      desktopReopen.savePreference(value);
+    } catch (err) {
+      showWarmupToast(`Could not save preference: ${formatWarmupError(err)}`, true);
+    }
+  };
+
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -630,11 +677,12 @@ function App() {
       unlisten = await listen<SwitchAccountBlockedPayload>(
         SWITCH_ACCOUNT_BLOCKED_EVENT,
         async (event) => {
+          if (forceCloseInFlightRef.current) return;
           const latestProcessInfo = await checkProcesses();
           const accountId = event.payload?.accountId;
 
           if (accountId && latestProcessInfo && !latestProcessInfo.can_switch) {
-            setPendingTraySwitchAccountId(accountId);
+            setPendingSwitchAccountId(accountId);
             setForceCloseConfirmOpen(true);
             return;
           }
@@ -643,7 +691,7 @@ function App() {
             try {
               setSwitchingId(accountId);
               await switchAccount(accountId);
-              setPendingTraySwitchAccountId(null);
+              setPendingSwitchAccountId(null);
               showWarmupToast("Switched account from tray.");
             } catch (err) {
               console.error("Failed to retry tray account switch:", err);
@@ -707,41 +755,51 @@ function App() {
     [closeBehaviorDontAskAgain, formatWarmupError, showWarmupToast]
   );
 
-  const handleForceCloseConfirm = useCallback(async () => {
-    const accountId = pendingTraySwitchAccountId;
-    const latestProcessInfo = await forceCloseCodexProcesses();
-
-    if (!accountId) {
-      return;
-    }
-
-    if (!latestProcessInfo?.can_switch) {
-      setPendingTraySwitchAccountId(null);
-      return;
-    }
-
+  const handleForceCloseConfirm = async () => {
+    if (forceCloseInFlightRef.current || desktopReopen.checking) return;
+    forceCloseInFlightRef.current = true;
+    const accountId = pendingSwitchAccountId;
+    const shouldReopen = desktopReopen.available && desktopReopen.reopen;
+    setIsCompletingForceClose(true);
     try {
-      setSwitchingId(accountId);
-      await switchAccount(accountId);
-      setPendingTraySwitchAccountId(null);
-      showWarmupToast("Switched account after force closing Codex.");
+      try {
+        desktopReopen.rememberSelection();
+      } catch (err) {
+        showWarmupToast(`Could not save preference: ${formatWarmupError(err)}`, true);
+      }
+      const result = await forceCloseCodexProcesses(shouldReopen);
+      if (!result?.processInfo?.can_switch) return;
+
+      await finishForceClose(
+        { canSwitch: true, reopenToken: result.reopenToken },
+        accountId ? async () => {
+          setSwitchingId(accountId);
+          await switchAccount(accountId);
+          showWarmupToast("Switched account after force closing Codex.");
+        } : null,
+        async (token) => {
+          try {
+            await invokeBackend("reopen_closed_codex_desktop", { token });
+            showWarmupToast(accountId ? "Account switched. Codex desktop reopened." : "Codex desktop reopened.");
+          } catch (err) {
+            showWarmupToast(`Codex closed${accountId ? " and account switched" : ""}, but reopening failed: ${formatWarmupError(err)}`, true);
+          }
+        },
+      );
+      if (shouldReopen && !result.reopenToken) {
+        showWarmupToast("No closed desktop app could be identified for reopening. Open Codex manually.", true);
+      }
     } catch (err) {
       console.error("Failed to switch account after force close:", err);
-      setPendingTraySwitchAccountId(null);
-      showWarmupToast(
-        `Switch failed after force close: ${formatWarmupError(err)}`,
-        true
-      );
+      showWarmupToast(`Switch failed after force close: ${formatWarmupError(err)}`, true);
     } finally {
+      setPendingSwitchAccountId(null);
       setSwitchingId(null);
+      setIsCompletingForceClose(false);
+      forceCloseInFlightRef.current = false;
+      void checkProcesses();
     }
-  }, [
-    forceCloseCodexProcesses,
-    formatWarmupError,
-    pendingTraySwitchAccountId,
-    showWarmupToast,
-    switchAccount,
-  ]);
+  };
 
   const handleWarmupAccount = async (accountId: string, accountName: string) => {
     try {
@@ -1166,11 +1224,11 @@ function App() {
   const activeAccount = accounts.find((a) => a.is_active);
   const otherAccounts = accounts.filter((a) => !a.is_active);
   const hasRunningProcesses = processInfo && processInfo.count > 0;
-  const pendingTraySwitchAccount = useMemo(
-    () => accounts.find((account) => account.id === pendingTraySwitchAccountId),
-    [accounts, pendingTraySwitchAccountId]
+  const pendingSwitchAccount = useMemo(
+    () => accounts.find((account) => account.id === pendingSwitchAccountId),
+    [accounts, pendingSwitchAccountId]
   );
-  const forceCloseConfirmLabel = pendingTraySwitchAccount
+  const forceCloseConfirmLabel = pendingSwitchAccount
     ? "Force close and switch account"
     : "Force close running Codex processes";
 
@@ -1360,7 +1418,7 @@ function App() {
                       {hasRunningProcesses && (
                         <button
                           onClick={() => {
-                            setPendingTraySwitchAccountId(null);
+                            setPendingSwitchAccountId(null);
                             setForceCloseConfirmOpen(true);
                           }}
                           disabled={isForceClosingCodex}
@@ -1375,7 +1433,7 @@ function App() {
                   {isTauriRuntime() && processInfo && !hasRunningProcesses && (
                     <button
                       onClick={handleOpenCodexApp}
-                      disabled={isOpeningCodex}
+                      disabled={isOpeningCodex || isCompletingForceClose || switchingId !== null}
                       className="inline-flex items-center rounded-md border border-green-200 bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700 transition-colors hover:bg-green-100 disabled:opacity-50 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300 dark:hover:bg-green-900/30"
                       title="Open Codex app"
                     >
@@ -1471,6 +1529,15 @@ function App() {
                 </button>
                 {isNavMenuOpen && (
                   <div className="absolute right-0 z-50 mt-2 w-64 rounded-xl border border-gray-200 bg-white p-2 text-gray-700 shadow-xl dark:border-neutral-800 dark:bg-black dark:text-white">
+                    <button
+                      onClick={() => {
+                        setIsNavMenuOpen(false);
+                        setIsSettingsOpen(true);
+                      }}
+                      className="flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:text-white dark:hover:bg-neutral-900"
+                    >
+                      Settings
+                    </button>
                     <button
                       onClick={() => {
                         setIsNavMenuOpen(false);
@@ -1754,7 +1821,8 @@ function App() {
                     }
                     onRename={(newName) => renameAccount(activeAccount.id, newName)}
                     switching={switchingId === activeAccount.id}
-                    switchDisabled={hasRunningProcesses ?? false}
+                    switchDisabled={switchingId !== null || isForceClosingCodex}
+                    codexRunning={hasRunningProcesses ?? false}
                     warmingUp={
                       isWarmingAll ||
                       warmingUpId === activeAccount.id ||
@@ -1850,7 +1918,8 @@ function App() {
                       }
                       onRename={(newName) => renameAccount(account.id, newName)}
                       switching={switchingId === account.id}
-                      switchDisabled={hasRunningProcesses ?? false}
+                      switchDisabled={switchingId !== null || isForceClosingCodex}
+                      codexRunning={hasRunningProcesses ?? false}
                       warmingUp={
                         isWarmingAll ||
                         warmingUpId === account.id ||
@@ -1904,6 +1973,14 @@ function App() {
         </div>
       )}
 
+      {isSettingsOpen && (
+        <SettingsModal
+          preference={desktopReopen.preference}
+          onChange={saveDesktopReopenPreference}
+          onClose={() => setIsSettingsOpen(false)}
+        />
+      )}
+
       {forceCloseConfirmOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl w-full max-w-md mx-4 shadow-xl">
@@ -1915,18 +1992,44 @@ function App() {
             <div className="p-5 space-y-3">
               <p className="text-sm text-gray-600 dark:text-gray-300">
                 This will force close {processInfo?.count ?? 0} Codex process
-                {(processInfo?.count ?? 0) === 1 ? "" : "es"} that currently
-                block account switching.
+                {(processInfo?.count ?? 0) === 1 ? "" : "es"} that currently{" "}
+                {(processInfo?.count ?? 0) === 1 ? "blocks" : "block"} account switching.
               </p>
-              {pendingTraySwitchAccount && (
+              {pendingSwitchAccount && (
                 <p className="text-sm text-gray-600 dark:text-gray-300">
                   After closing Codex, Codex Switcher will switch to{" "}
                   <span className="font-medium text-gray-900 dark:text-gray-100">
-                    {pendingTraySwitchAccount.name}
+                    {pendingSwitchAccount.name}
                   </span>
                   .
                 </p>
               )}
+              <div className="space-y-2 rounded-lg bg-gray-50 dark:bg-gray-800 p-3">
+                {desktopReopen.checking ? (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">Checking for a desktop app to reopen...</p>
+                ) : desktopReopen.available && desktopReopen.preference !== "ask" ? (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    {desktopReopen.preference === "always"
+                      ? "Codex desktop will reopen automatically."
+                      : "Codex desktop will stay closed."}{" "}
+                    You can change this in Settings.
+                  </p>
+                ) : desktopReopen.available ? (
+                  <>
+                    <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
+                      <input type="checkbox" checked={desktopReopen.reopen} onChange={(event) => desktopReopen.setReopen(event.target.checked)} disabled={isForceClosingCodex} className="h-4 w-4 accent-orange-600" />
+                      Reopen Codex desktop after force close
+                    </label>
+                    <label className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                      <input type="checkbox" checked={desktopReopen.remember} onChange={(event) => desktopReopen.setRemember(event.target.checked)} disabled={isForceClosingCodex} className="h-4 w-4 accent-orange-600" />
+                      Remember this selection
+                    </label>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">You can change this later in Settings. Terminal and IDE sessions will not reopen.</p>
+                  </>
+                ) : (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">No supported desktop app could be identified for reopening. Codex will only be closed.</p>
+                )}
+              </div>
               <p className="text-sm text-red-600 dark:text-red-300">
                 Unsaved Codex work may be lost.
               </p>
@@ -1934,7 +2037,7 @@ function App() {
             <div className="flex justify-end gap-3 p-5 border-t border-gray-100 dark:border-gray-800">
               <button
                 onClick={() => {
-                  setPendingTraySwitchAccountId(null);
+                  setPendingSwitchAccountId(null);
                   setForceCloseConfirmOpen(false);
                 }}
                 disabled={isForceClosingCodex}
@@ -1946,7 +2049,7 @@ function App() {
                 onClick={() => {
                   void handleForceCloseConfirm();
                 }}
-                disabled={isForceClosingCodex}
+                disabled={isForceClosingCodex || desktopReopen.checking}
                 className="px-4 py-2.5 text-sm font-medium rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors disabled:opacity-50"
               >
                 {isForceClosingCodex
