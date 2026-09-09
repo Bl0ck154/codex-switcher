@@ -17,6 +17,7 @@ interface AccountCardProps {
   onRename: (newName: string) => Promise<void>;
   switching?: boolean;
   switchDisabled?: boolean;
+  codexRunning?: boolean;
   warmingUp?: boolean;
   masked?: boolean;
   onToggleMask?: () => void;
@@ -103,6 +104,7 @@ export function AccountCard({
   onRename,
   switching,
   switchDisabled,
+  codexRunning = false,
   warmingUp,
   masked = false,
   onToggleMask,
@@ -210,7 +212,8 @@ export function AccountCard({
 
   const planKey = account.plan_type?.toLowerCase() || "api_key";
   const planColorClass = planColors[planKey] || planColors.free;
-  const showSubscriptionStatus = account.auth_mode === "chat_g_p_t";
+  const showSubscriptionStatus =
+    account.auth_mode === "chat_g_p_t" && account.plan_type?.toLowerCase() !== "free";
   const subscriptionStatus = getSubscriptionStatus(account.subscription_expires_at);
   const compactResetCredits = !account.is_active;
 
@@ -458,6 +461,8 @@ export function AccountCard({
         accountId={account.id}
         enabled={account.auth_mode === "chat_g_p_t"}
         open={statsOpen}
+        usage={account.usage}
+        usageLoading={account.usageLoading}
         onStatsLoaded={handleStatsLoaded}
       />
     </div>

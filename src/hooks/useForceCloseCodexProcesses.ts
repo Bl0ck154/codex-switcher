@@ -6,6 +6,7 @@ interface KillCodexProcessesResult {
   targeted_count: number;
   killed_pids: number[];
   failed_pids: number[];
+  reopen_token?: string | null;
 }
 
 interface UseForceCloseCodexProcessesOptions {
@@ -24,18 +25,21 @@ export function useForceCloseCodexProcesses({
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [isForceClosing, setIsForceClosing] = useState(false);
 
-  const forceCloseCodexProcesses = useCallback(async () => {
+  const forceCloseCodexProcesses = useCallback(async (reopenDesktop = false) => {
     try {
       setIsForceClosing(true);
 
       const result = await invokeBackend<KillCodexProcessesResult>(
-        "kill_codex_processes"
+        "kill_codex_processes",
+        { reopenDesktop }
       );
       const latestProcessInfo = await checkProcesses();
-      const remainingCount = latestProcessInfo?.count ?? 0;
+      const remainingCount = latestProcessInfo?.count ?? processCount;
       const closedCount = Math.max(0, processCount - remainingCount);
 
-      if (result.targeted_count === 0) {
+      if (!latestProcessInfo) {
+        showToast("Could not verify that Codex closed. Account switching and reopening were skipped.", true);
+      } else if (result.targeted_count === 0) {
         showToast("No running Codex processes found.");
       } else if (remainingCount === 0) {
         showToast(
@@ -57,7 +61,7 @@ export function useForceCloseCodexProcesses({
         );
       }
 
-      return latestProcessInfo;
+      return { processInfo: latestProcessInfo, reopenToken: result.reopen_token ?? null };
     } catch (err) {
       console.error("Failed to force close Codex processes:", err);
       showToast(`Force close failed: ${formatError(err)}`, true);
