@@ -62,8 +62,9 @@ jobs:
       - name: Validate Rust
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Validate formatting and whitespace
+      - name: Format and validate whitespace
         run: |
+          cargo fmt --manifest-path src-tauri/Cargo.toml
           cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
           git diff --check
 
