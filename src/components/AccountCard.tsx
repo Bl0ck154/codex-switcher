@@ -104,7 +104,6 @@ export function AccountCard({
   onRename,
   switching,
   switchDisabled,
-  codexRunning = false,
   warmingUp,
   masked = false,
   onToggleMask,

@@ -667,9 +667,13 @@ mod tests {
 
         assert!(refresh_error_invalidates_saved_session(&invalidated));
         assert!(refresh_error_invalidates_saved_session(&reused));
-        assert!(refresh_error_invalidates_saved_session(&invalid_refresh_token));
+        assert!(refresh_error_invalidates_saved_session(
+            &invalid_refresh_token
+        ));
         assert!(refresh_error_invalidates_saved_session(&invalid_grant));
-        assert!(!refresh_error_invalidates_saved_session(&generic_unauthorized));
+        assert!(!refresh_error_invalidates_saved_session(
+            &generic_unauthorized
+        ));
         assert!(!refresh_error_invalidates_saved_session(&transient));
     }
 

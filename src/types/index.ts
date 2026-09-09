@@ -15,6 +15,15 @@ export interface AccountInfo {
   last_used_at: string | null;
 }
 
+export interface LunaReserveInfo {
+  normal_model_slug: string;
+  allowed: boolean;
+  limit_reached: boolean;
+  used_percent: number;
+  window_minutes: number | null;
+  resets_at: number | null;
+}
+
 export interface UsageInfo {
   account_id: string;
   plan_type: string | null;
@@ -24,6 +33,7 @@ export interface UsageInfo {
   secondary_used_percent: number | null;
   secondary_window_minutes: number | null;
   secondary_resets_at: number | null;
+  luna_reserve?: LunaReserveInfo | null;
   has_credits: boolean | null;
   unlimited_credits: boolean | null;
   credits_balance: string | null;

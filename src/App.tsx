@@ -553,7 +553,7 @@ function App() {
     // existing force-close confirmation flow and automatically retry the switch.
     const latestProcessInfo = await checkProcesses();
     if (latestProcessInfo && !latestProcessInfo.can_switch) {
-      setPendingTraySwitchAccountId(accountId);
+      setPendingSwitchAccountId(accountId);
       setForceCloseConfirmOpen(true);
       return;
     }

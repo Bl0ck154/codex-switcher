@@ -384,6 +384,17 @@ impl AccountInfo {
     }
 }
 
+/// GPT/Luna Reserve quota exposed by ChatGPT as the `gpt-reserve` additional rate limit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LunaReserveInfo {
+    pub normal_model_slug: String,
+    pub allowed: bool,
+    pub limit_reached: bool,
+    pub used_percent: f64,
+    pub window_minutes: Option<i64>,
+    pub resets_at: Option<i64>,
+}
+
 /// Usage information for an account
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UsageInfo {
@@ -403,6 +414,9 @@ pub struct UsageInfo {
     pub secondary_window_minutes: Option<i64>,
     /// Secondary window reset timestamp (unix seconds)
     pub secondary_resets_at: Option<i64>,
+    /// Optional GPT/Luna Reserve bucket. Present only when OpenAI exposes `gpt-reserve`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub luna_reserve: Option<LunaReserveInfo>,
     /// Whether the account has credits
     pub has_credits: Option<bool>,
     /// Whether credits are unlimited
@@ -424,6 +438,7 @@ impl UsageInfo {
             secondary_used_percent: None,
             secondary_window_minutes: None,
             secondary_resets_at: None,
+            luna_reserve: None,
             has_credits: None,
             unlimited_credits: None,
             credits_balance: None,
@@ -473,6 +488,9 @@ pub struct RateLimitStatusPayload {
     pub plan_type: String,
     #[serde(default)]
     pub rate_limit: Option<RateLimitDetails>,
+    /// Model-specific/additional quota buckets such as OpenAI's `gpt-reserve`.
+    #[serde(default)]
+    pub additional_rate_limits: Vec<serde_json::Value>,
     #[serde(default)]
     pub credits: Option<CreditStatusDetails>,
 }
