@@ -262,3 +262,16 @@ replace_once(
       )}
       {usage.credits_balance && (""",
 )
+
+# Resolve the two frontend overlaps introduced by upstream's desktop-reopen feature while
+# preserving this fork's existing switch state machine and AccountCard behavior.
+replace_once(
+    "src/App.tsx",
+    "setPendingTraySwitchAccountId(accountId);",
+    "setPendingSwitchAccountId(accountId);",
+)
+replace_once(
+    "src/components/AccountCard.tsx",
+    "  codexRunning,\n",
+    "",
+)
