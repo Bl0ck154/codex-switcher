@@ -272,6 +272,6 @@ replace_once(
 )
 replace_once(
     "src/components/AccountCard.tsx",
-    "  codexRunning,\n",
+    "  codexRunning = false,\n",
     "",
 )
