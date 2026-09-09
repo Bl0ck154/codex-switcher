@@ -95,9 +95,9 @@ function RateLimitBar({
 
   return (
     <div className="space-y-1">
-      <div className="flex justify-between text-xs text-gray-500 dark:text-gray-400">
-        <span>{windowLabel ? `${windowLabel} limit` : label}</span>
-        <span>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs text-gray-500 dark:text-gray-400">
+        <span className="min-w-0">{windowLabel ? `${windowLabel} limit` : label}</span>
+        <span className="ml-auto min-w-0 text-right">
           {remainingPercent.toFixed(0)}% left
           {resetLabel && ` • resets ${resetLabel}`}
           {resetLabel && exactResetLabel && ` (${exactResetLabel})`}
@@ -192,14 +192,20 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
       {lunaReserve && (
         <div className="space-y-1">
           <RateLimitBar
-            label={`GPT Reserve • ${lunaReserve.normal_model_slug || "Luna"}`}
+            label="GPT Reserve"
             usedPercent={lunaReserve.used_percent}
             resetsAt={lunaReserve.resets_at}
           />
-          <div className="text-[11px] text-gray-500 dark:text-gray-400">
-            {lunaReserve.allowed && !lunaReserve.limit_reached && lunaReserve.used_percent < 100
-              ? "Luna fallback available when normal Codex quota is exhausted"
-              : "Luna Reserve unavailable or exhausted"}
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+            <span className="truncate" title={lunaReserve.normal_model_slug}>
+              {lunaReserve.normal_model_slug || "Luna"}
+            </span>
+            <span aria-hidden="true">•</span>
+            <span>
+              {lunaReserve.allowed && !lunaReserve.limit_reached && lunaReserve.used_percent < 100
+                ? "fallback available"
+                : "unavailable or exhausted"}
+            </span>
           </div>
         </div>
       )}
