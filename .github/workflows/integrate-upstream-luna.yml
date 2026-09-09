@@ -70,6 +70,9 @@ jobs:
 
       - name: Commit validated integration
         run: |
+          # Upstream changed its CI workflow too. Keep our existing CI definition so
+          # the Actions token only pushes application/source changes.
+          git restore --source=origin/main -- .github/workflows/build.yml
           git add -A
           if git diff --cached --quiet; then
             echo "No integration changes to commit"
