@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   hotfix:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,6 +23,13 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Apply hotfix
         shell: python
         run: |
@@ -31,10 +38,6 @@ jobs:
 
           types = Path('src-tauri/src/types.rs')
           text = types.read_text()
-          old = """    /// Model-specific/additional quota buckets such as OpenAI's `gpt-reserve`.
-              #[serde(default)]
-              pub additional_rate_limits: Vec<serde_json::Value>,""".replace("              ", "    ")
-          # Match independently of indentation to avoid formatter differences.
           pattern = re.compile(
               r"    /// Model-specific/additional quota buckets such as OpenAI's `gpt-reserve`\.\n"
               r"    #\[serde\(default\)\]\n"
