@@ -94,7 +94,7 @@ jobs:
         with:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: ${{ needs.prepare.outputs.tag }}
-          releaseBody: GPT/Luna Reserve quota support with compact Reserve usage display and upstream sync.
+          releaseBody: Fix usage parsing when additional rate limits are null, keep GPT/Luna Reserve support, and clearly distinguish usage-format errors from expired account sign-ins.
           generateReleaseNotes: true
           releaseDraft: false
           prerelease: false
