@@ -42,7 +42,11 @@ function formatUsageError(error: string): { title: string; message: string } {
   if (
     lowerError.includes("invalid refresh token") ||
     lowerError.includes("could not refresh the saved codex switcher session") ||
-    (lowerError.includes("401 unauthorized") && lowerError.includes("refresh"))
+    (lowerError.includes("401 unauthorized") && lowerError.includes("refresh")) ||
+    lowerError.includes("refresh_token_invalidated") ||
+    lowerError.includes("saved session is out of date") ||
+    lowerError.includes("refresh_token_reused") ||
+    lowerError.includes("outdated refresh token")
   ) {
     return {
       title: "Account sign-in expired",
@@ -54,23 +58,6 @@ function formatUsageError(error: string): { title: string; message: string } {
     return {
       title: "Usage format changed",
       message: "The account may still be signed in. Switcher couldn't read the usage response.",
-    };
-  }
-
-  if (
-    error.includes("refresh_token_invalidated") ||
-    error.includes("saved session is out of date")
-  ) {
-    return {
-      title: "Session expired",
-      message: "Re-authenticate this account.",
-    };
-  }
-
-  if (error.includes("refresh_token_reused") || error.includes("outdated refresh token")) {
-    return {
-      title: "Session expired",
-      message: "Re-authenticate this account.",
     };
   }
 
@@ -182,6 +169,8 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
   const hasPrimary = usage.primary_used_percent !== null && usage.primary_used_percent !== undefined;
   const hasSecondary = usage.secondary_used_percent !== null && usage.secondary_used_percent !== undefined;
   const lunaReserve = usage.luna_reserve ?? null;
+  const planType = (usage.plan_type ?? "").toLowerCase();
+  const canPotentiallyHaveLunaReserve = planType === "plus" || planType === "pro";
 
   if (!hasPrimary && !hasSecondary && !lunaReserve) {
     return (
@@ -209,7 +198,7 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
           resetsAt={usage.secondary_resets_at}
         />
       )}
-      {lunaReserve && (
+      {lunaReserve ? (
         <div className="space-y-1">
           <RateLimitBar
             label="GPT Reserve"
@@ -228,7 +217,15 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
             </span>
           </div>
         </div>
-      )}
+      ) : canPotentiallyHaveLunaReserve ? (
+        <div
+          className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-xs text-gray-400 dark:text-gray-500"
+          title="OpenAI did not include a gpt-reserve quota bucket in this usage response. Luna Reserve is only exposed for selected eligible accounts, typically after regular usage is exhausted."
+        >
+          <span>GPT Reserve</span>
+          <span className="ml-auto text-right">not reported by OpenAI yet</span>
+        </div>
+      ) : null}
       {usage.credits_balance && (
         <div className="text-xs text-gray-500 dark:text-gray-400">
           Credits: {usage.credits_balance}
