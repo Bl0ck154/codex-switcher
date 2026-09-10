@@ -1,0 +1,145 @@
+name: Hotfix usage null parser
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/hotfix-usage-null.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  hotfix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Apply hotfix
+        shell: python
+        run: |
+          from pathlib import Path
+
+          types = Path('src-tauri/src/types.rs')
+          text = types.read_text()
+          old = '''    /// Model-specific/additional quota buckets such as OpenAI's `gpt-reserve`.
+              #[serde(default)]
+              pub additional_rate_limits: Vec<serde_json::Value>,'''.replace('              ', '    ')
+          new = '''    /// Model-specific/additional quota buckets such as OpenAI's `gpt-reserve`.
+              /// The backend commonly sends this field as JSON `null` for accounts
+              /// without extra buckets, so normalize null to an empty list.
+              #[serde(default, deserialize_with = "deserialize_null_as_default")]
+              pub additional_rate_limits: Vec<serde_json::Value>,'''.replace('              ', '    ')
+          if old not in text:
+              raise SystemExit('types field target not found')
+          text = text.replace(old, new, 1)
+
+          helper_anchor = '''/// Rate limit status from API
+          #[derive(Debug, Clone, Deserialize)]'''.replace('          ', '')
+          helper = '''fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+          where
+              D: serde::Deserializer<'de>,
+              T: Deserialize<'de> + Default,
+          {
+              Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+          }
+          
+          /// Rate limit status from API
+          #[derive(Debug, Clone, Deserialize)]'''.replace('          ', '')
+          if helper_anchor not in text:
+              raise SystemExit('types helper anchor not found')
+          text = text.replace(helper_anchor, helper, 1)
+
+          test_anchor = '''    #[test]
+              fn app_settings_default_missing_dock_display_mode_to_show_in_dock() {'''.replace('              ', '    ')
+          test = '''    #[test]
+              fn rate_limit_payload_accepts_null_additional_rate_limits() {
+                  let payload: super::RateLimitStatusPayload = serde_json::from_str(
+                      r#"{\"plan_type\":\"plus\",\"rate_limit\":null,\"additional_rate_limits\":null,\"credits\":null}"#,
+                  )
+                  .unwrap();
+                  assert!(payload.additional_rate_limits.is_empty());
+              }
+          
+              #[test]
+              fn app_settings_default_missing_dock_display_mode_to_show_in_dock() {'''.replace('              ', '    ')
+          if test_anchor not in text:
+              raise SystemExit('types test anchor not found')
+          text = text.replace(test_anchor, test, 1)
+          types.write_text(text)
+
+          usage = Path('src-tauri/src/api/usage.rs')
+          text = usage.read_text()
+          old = '''    let payload: RateLimitStatusPayload =
+              serde_json::from_str(&body_text).context("Failed to parse usage response")?;'''.replace('              ', '    ')
+          new = '''    let payload: RateLimitStatusPayload = match serde_json::from_str(&body_text) {
+              Ok(payload) => payload,
+              Err(error) => {
+                  println!(
+                      "[Usage] Failed to parse usage response for {account_name}: {error}; body preview: {}",
+                      truncate_text(&body_text.replace(['\\r', '\\n'], " "), 500)
+                  );
+                  anyhow::bail!("Failed to parse usage response: {error}");
+              }
+          };'''.replace('              ', '    ')
+          if old not in text:
+              raise SystemExit('usage parse target not found')
+          text = text.replace(old, new, 1)
+          usage.write_text(text)
+
+          ui = Path('src/components/UsageBar.tsx')
+          text = ui.read_text()
+          anchor = '''function formatUsageError(error: string): { title: string; message: string } {
+            if (
+          '''
+          replacement = '''function formatUsageError(error: string): { title: string; message: string } {
+            const lowerError = error.toLowerCase();
+          
+            if (
+              lowerError.includes("invalid refresh token") ||
+              lowerError.includes("could not refresh the saved codex switcher session") ||
+              (lowerError.includes("401 unauthorized") && lowerError.includes("refresh"))
+            ) {
+              return {
+                title: "Account sign-in expired",
+                message: "Re-authenticate this account in Codex Switcher.",
+              };
+            }
+          
+            if (lowerError.includes("failed to parse usage response")) {
+              return {
+                title: "Usage format changed",
+                message: "The account may still be signed in. Switcher couldn't read the usage response.",
+              };
+            }
+          
+            if (
+          '''
+          if anchor not in text:
+              raise SystemExit('UsageBar target not found')
+          text = text.replace(anchor, replacement, 1)
+          ui.write_text(text)
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Frontend build
+        run: pnpm build
+      - name: Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Rustfmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+      - name: Commit hotfix
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src-tauri/src/types.rs src-tauri/src/api/usage.rs src/components/UsageBar.tsx
+          git diff --cached --quiet && exit 0
+          git commit -m "fix: accept null additional usage limits"
+          git push origin HEAD:main
