@@ -27,20 +27,15 @@ jobs:
         with:
           node-version: 20
 
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Create release commit and tag
-        run: >-
-          node scripts/release.mjs patch --push
-          --note "GPT/Luna Reserve quota support with compact Reserve usage display and upstream sync."
-
-      - name: Read release tag
+      - name: Resolve existing release tag
         id: version
         shell: bash
-        run: echo "tag=v$(node -p \"require('./package.json').version\")" >> "$GITHUB_OUTPUT"
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+          git rev-parse "$TAG" >/dev/null
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Packaging $TAG"
 
   publish:
     needs: prepare
