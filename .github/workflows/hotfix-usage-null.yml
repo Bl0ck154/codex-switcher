@@ -95,7 +95,7 @@ jobs:
               Err(error) => {
                   println!(
                       "[Usage] Failed to parse usage response for {account_name}: {error}; body preview: {}",
-                      truncate_text(&body_text.replace(['\\r', '\\n'], " "), 500)
+                      truncate_text(&body_text, 500)
                   );
                   anyhow::bail!("Failed to parse usage response: {error}");
               }
@@ -137,13 +137,15 @@ jobs:
               raise SystemExit('UsageBar target not found')
           text = text.replace(anchor, replacement, 1)
           ui.write_text(text)
+      - name: Format Rust
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
       - name: Frontend build
         run: pnpm build
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
-      - name: Rustfmt
+      - name: Rustfmt check
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
       - name: Commit hotfix
         run: |
