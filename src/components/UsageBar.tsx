@@ -37,6 +37,26 @@ function formatWindowDuration(minutes: number | null | undefined): string {
 }
 
 function formatUsageError(error: string): { title: string; message: string } {
+  const lowerError = error.toLowerCase();
+
+  if (
+    lowerError.includes("invalid refresh token") ||
+    lowerError.includes("could not refresh the saved codex switcher session") ||
+    (lowerError.includes("401 unauthorized") && lowerError.includes("refresh"))
+  ) {
+    return {
+      title: "Account sign-in expired",
+      message: "Re-authenticate this account in Codex Switcher.",
+    };
+  }
+
+  if (lowerError.includes("failed to parse usage response")) {
+    return {
+      title: "Usage format changed",
+      message: "The account may still be signed in. Switcher couldn't read the usage response.",
+    };
+  }
+
   if (
     error.includes("refresh_token_invalidated") ||
     error.includes("saved session is out of date")

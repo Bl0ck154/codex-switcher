@@ -185,8 +185,16 @@ async fn parse_usage_response(
         .await
         .context("Failed to read response body")?;
 
-    let payload: RateLimitStatusPayload =
-        serde_json::from_str(&body_text).context("Failed to parse usage response")?;
+    let payload: RateLimitStatusPayload = match serde_json::from_str(&body_text) {
+        Ok(payload) => payload,
+        Err(error) => {
+            println!(
+            "[Usage] Failed to parse usage response for {account_name}: {error}; body preview: {}",
+            truncate_text(&body_text, 500)
+        );
+            anyhow::bail!("Failed to parse usage response: {error}");
+        }
+    };
 
     let usage = convert_payload_to_usage_info(account_id, payload);
     println!("[Usage] Refreshed account: {account_name}");

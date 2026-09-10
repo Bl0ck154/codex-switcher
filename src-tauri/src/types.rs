@@ -482,6 +482,14 @@ pub struct OAuthLoginInfo {
 // API Response types (from Codex backend)
 // ============================================================================
 
+fn deserialize_null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Option::<T>::deserialize(deserializer).map(Option::unwrap_or_default)
+}
+
 /// Rate limit status from API
 #[derive(Debug, Clone, Deserialize)]
 pub struct RateLimitStatusPayload {
@@ -489,7 +497,9 @@ pub struct RateLimitStatusPayload {
     #[serde(default)]
     pub rate_limit: Option<RateLimitDetails>,
     /// Model-specific/additional quota buckets such as OpenAI's `gpt-reserve`.
-    #[serde(default)]
+    /// The backend commonly sends this field as JSON `null` for accounts
+    /// without extra buckets, so normalize null to an empty list.
+    #[serde(default, deserialize_with = "deserialize_null_as_default")]
     pub additional_rate_limits: Vec<serde_json::Value>,
     #[serde(default)]
     pub credits: Option<CreditStatusDetails>,
@@ -538,6 +548,15 @@ mod tests {
                 .map(|value| value.to_rfc3339()),
             Some("2026-04-23T05:03:38+00:00".to_string())
         );
+    }
+
+    #[test]
+    fn rate_limit_payload_accepts_null_additional_rate_limits() {
+        let payload: super::RateLimitStatusPayload = serde_json::from_str(
+            r#"{"plan_type":"plus","rate_limit":null,"additional_rate_limits":null,"credits":null}"#,
+        )
+        .unwrap();
+        assert!(payload.additional_rate_limits.is_empty());
     }
 
     #[test]
