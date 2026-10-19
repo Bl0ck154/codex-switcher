@@ -149,7 +149,8 @@ async fn same_email_different_workspaces_are_added_without_replacing_active() {
         accounts: vec![active.clone()],
         active_account_id: Some(active.id.clone()),
         ..AccountsStore::default()
-    }).unwrap();
+    })
+    .unwrap();
     switch_to_account(&active).unwrap();
     let auth_path = get_codex_auth_file().unwrap();
     let auth_before = fs::read(&auth_path).unwrap();

@@ -229,7 +229,7 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
         "kill_codex_processes" => {
             let args: CloseCodexArgs = parse_args(payload)?;
             to_json(kill_codex_processes(args.reopen_desktop, args.force_close).await?)
-        },
+        }
         _ => Err(format!("Unsupported web command: {command}")),
     }
 }
