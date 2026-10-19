@@ -61,7 +61,8 @@ pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson)
     access_token.clone_from(&tokens.access_token);
     refresh_token.clone_from(&tokens.refresh_token);
     *account_id = Some(current_account_id);
-    true}
+    true
+}
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
@@ -784,5 +785,4 @@ mod tests {
         assert_eq!(store.accounts.len(), 1);
         assert!(store.active_account_id.is_none());
     }
-
 }
