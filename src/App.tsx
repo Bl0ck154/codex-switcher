@@ -554,7 +554,6 @@ function App() {
 
   const handleSwitch = async (accountId: string) => {
     try {
-      setSwitchingId(accountId);
       const latestProcessInfo = await checkProcesses();
       if (!latestProcessInfo) {
         showWarmupToast("Could not check running Codex processes. Try again.", true);
@@ -566,16 +565,12 @@ function App() {
         return;
       }
 
+      setSwitchingId(accountId);
       await switchAccount(accountId);
+      showWarmupToast("Switched account.");
     } catch (err) {
       console.error("Failed to switch account:", err);
-      const latestProcessInfo = await checkProcesses();
-      if (latestProcessInfo && !latestProcessInfo.can_switch) {
-        setPendingSwitchAccountId(accountId);
-        setForceCloseConfirmOpen(true);
-      } else {
-        showWarmupToast(`Switch failed: ${formatWarmupError(err)}`, true);
-      }
+      showWarmupToast(`Switch failed: ${formatWarmupError(err)}`, true);
     } finally {
       setSwitchingId(null);
     }

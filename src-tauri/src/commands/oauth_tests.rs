@@ -60,7 +60,7 @@ async fn adding_oauth_account_preserves_active_account_and_live_auth() {
         account: account("B"),
     }));
 
-    let added = complete_login().await.unwrap();
+    let added = complete_login(None).await.unwrap();
     let store = load_accounts().unwrap();
     assert_eq!(store.active_account_id.as_deref(), Some(active.id.as_str()));
     assert_eq!(fs::read(auth_path).unwrap(), auth_before);
@@ -82,7 +82,7 @@ async fn adding_first_oauth_account_does_not_activate_or_create_auth() {
         account: account("first"),
     }));
 
-    let added = complete_login().await.unwrap();
+    let added = complete_login(None).await.unwrap();
     let store = load_accounts().unwrap();
     assert!(store.active_account_id.is_none());
     assert!(!get_codex_auth_file().unwrap().exists());
@@ -108,7 +108,7 @@ async fn adding_oauth_account_preserves_no_active_account_and_external_auth() {
         account: account("new"),
     }));
 
-    let added = complete_login().await.unwrap();
+    let added = complete_login(None).await.unwrap();
     let store = load_accounts().unwrap();
     assert!(store.active_account_id.is_none());
     assert_eq!(fs::read(auth_path).unwrap(), auth_before);
@@ -134,15 +134,36 @@ async fn duplicate_or_failed_oauth_login_leaves_storage_and_auth_unchanged() {
     let store_before = fs::read(&store_path).unwrap();
     let auth_before = fs::read(&auth_path).unwrap();
 
-    for result in [
-        Ok(OAuthLoginResult {
-            account: account("A"),
-        }),
-        Err(anyhow::anyhow!("synthetic OAuth failure")),
-    ] {
-        complete_with(result);
-        assert!(complete_login().await.is_err());
-        assert_eq!(fs::read(&store_path).unwrap(), store_before);
-        assert_eq!(fs::read(&auth_path).unwrap(), auth_before);
+    complete_with(Err(anyhow::anyhow!("synthetic OAuth failure")));
+    assert!(complete_login(None).await.is_err());
+    assert_eq!(fs::read(&store_path).unwrap(), store_before);
+    assert_eq!(fs::read(&auth_path).unwrap(), auth_before);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn same_email_different_workspaces_are_added_without_replacing_active() {
+    let _lock = OAUTH_TEST_LOCK.lock().await;
+    let _home = TestHome::new();
+    let active = account("same@example.com");
+    save_accounts(&AccountsStore {
+        accounts: vec![active.clone()],
+        active_account_id: Some(active.id.clone()),
+        ..AccountsStore::default()
+    }).unwrap();
+    switch_to_account(&active).unwrap();
+    let auth_path = get_codex_auth_file().unwrap();
+    let auth_before = fs::read(&auth_path).unwrap();
+
+    let mut business = account("same@example.com");
+    if let AuthData::ChatGPT { account_id, .. } = &mut business.auth_data {
+        *account_id = Some("second-workspace".into());
     }
+    complete_with(Ok(OAuthLoginResult { account: business }));
+    let saved = complete_login(None).await.unwrap();
+    let store = load_accounts().unwrap();
+    assert_eq!(store.accounts.len(), 2);
+    assert_ne!(store.accounts[0].id, store.accounts[1].id);
+    assert_eq!(saved.name, "same@example.com (workspace)");
+    assert_eq!(store.active_account_id, Some(active.id));
+    assert_eq!(fs::read(&auth_path).unwrap(), auth_before);
 }

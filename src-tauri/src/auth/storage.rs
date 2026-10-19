@@ -66,8 +66,16 @@ pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson)
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not find home directory")?;
-    Ok(home.join(".codex-switcher"))
+    #[cfg(test)]
+    {
+        Ok(super::test_support::home_dir()?.join(".codex-switcher"))
+    }
+
+    #[cfg(not(test))]
+    {
+        let home = dirs::home_dir().context("Could not find home directory")?;
+        Ok(home.join(".codex-switcher"))
+    }
 }
 
 /// Get the path to accounts.json
@@ -244,9 +252,7 @@ fn add_or_replace_account_to_store(
     disambiguate_account_name(store, &mut account);
     let saved = account.clone();
     store.accounts.push(account);
-    if store.accounts.len() == 1 {
-        store.active_account_id = Some(saved.id.clone());
-    }
+    // New profiles are saved inactive; explicit Switch changes Codex auth.json.
     Ok(saved)
 }
 
@@ -726,6 +732,14 @@ mod tests {
             *id_token = id_token_with_account_id("actual", "signed");
         }
         assert!(same_saved_account(&existing, &account("email@example.com", "actual", "b")));
+    }
+
+    #[test]
+    fn adding_first_account_does_not_activate_it() {
+        let mut store = AccountsStore::default();
+        add_or_replace_account_to_store(&mut store, account("first", "ws-first", "one"), false).unwrap();
+        assert_eq!(store.accounts.len(), 1);
+        assert!(store.active_account_id.is_none());
     }
 
 }
