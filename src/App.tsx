@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAccounts } from "./hooks/useAccounts";
 import { useDesktopReopen } from "./hooks/useDesktopReopen";
+import { useCodexClosePreference } from "./hooks/useCodexClosePreference";
 import { SettingsModal } from "./components/SettingsModal";
 import { finishForceClose, type DesktopReopenPreference } from "./lib/desktopReopen";
+import type { CodexClosePreference } from "./lib/codexClosePreference";
 import { useForceCloseCodexProcesses } from "./hooks/useForceCloseCodexProcesses";
-import { AccountCard, AddAccountModal, UpdateChecker } from "./components";
+import { AccountCard, AddAccountModal, UpdateChecker, WindowResizeBorders } from "./components";
 import type { AccountWithUsage, CodexProcessInfo, DockDisplayMode, UsageInfo } from "./types";
 import {
   exportFullBackupFile,
@@ -40,6 +41,7 @@ import {
   type AutoWarmupWindow,
   type AutoWarmupWindowKind,
 } from "./lib/autoWarmupPolicy";
+import { getTauriWindow } from "./lib/tauriWindow";
 import "./App.css";
 
 const AUTO_WARMUP_CHECK_INTERVAL_MS = 30 * 1000;
@@ -63,7 +65,6 @@ type AutoWarmupLedger = Record<
     lastAutoWindowKind?: AutoWarmupWindowKind;
   }
 >;
-const appWindow = getCurrentWindow();
 const isMacOs =
   typeof navigator !== "undefined" &&
   /(Mac|iPhone|iPod|iPad)/i.test(navigator.userAgent);
@@ -386,14 +387,14 @@ function App() {
   const handleTitlebarDrag = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
       if (!isTauriRuntime() || event.button !== 0) return;
-      void appWindow.startDragging();
+      void getTauriWindow()?.startDragging();
     },
     []
   );
 
   const handleTitlebarDoubleClick = useCallback(() => {
     if (!isTauriRuntime()) return;
-    void appWindow.toggleMaximize();
+    void getTauriWindow()?.toggleMaximize();
   }, []);
 
   const toggleMask = (accountId: string) => {
@@ -520,6 +521,9 @@ function App() {
   useEffect(() => {
     if (!isTauriRuntime() || isMacOs) return;
 
+    const appWindow = getTauriWindow();
+    if (!appWindow) return;
+
     let unlisten: (() => void) | undefined;
 
     const syncMaximizedState = async () => {
@@ -549,17 +553,7 @@ function App() {
   }, []);
 
   const handleSwitch = async (accountId: string) => {
-    // Never make the Switch button look dead. If Codex is running, reuse the
-    // existing force-close confirmation flow and automatically retry the switch.
-    const latestProcessInfo = await checkProcesses();
-    if (latestProcessInfo && !latestProcessInfo.can_switch) {
-      setPendingSwitchAccountId(accountId);
-      setForceCloseConfirmOpen(true);
-      return;
-    }
-
     try {
-      setSwitchingId(accountId);
       const latestProcessInfo = await checkProcesses();
       if (!latestProcessInfo) {
         showWarmupToast("Could not check running Codex processes. Try again.", true);
@@ -571,6 +565,7 @@ function App() {
         return;
       }
 
+      setSwitchingId(accountId);
       await switchAccount(accountId);
       showWarmupToast("Switched account.");
     } catch (err) {
@@ -648,7 +643,7 @@ function App() {
     forceCloseConfirmOpen,
     setForceCloseConfirmOpen,
     isForceClosingCodex: isKillingCodex,
-    forceCloseCodexProcesses,
+    closeCodexProcesses,
   } = useForceCloseCodexProcesses({
     processCount: processInfo?.count ?? 0,
     checkProcesses,
@@ -657,11 +652,19 @@ function App() {
   });
   const isForceClosingCodex = isKillingCodex || isCompletingForceClose;
   const desktopReopen = useDesktopReopen(forceCloseConfirmOpen);
+  const codexClose = useCodexClosePreference(forceCloseConfirmOpen);
   const saveDesktopReopenPreference = (value: DesktopReopenPreference) => {
     try {
       desktopReopen.savePreference(value);
     } catch (err) {
       showWarmupToast(`Could not save preference: ${formatWarmupError(err)}`, true);
+    }
+  };
+  const saveCodexClosePreference = (value: CodexClosePreference) => {
+    try {
+      codexClose.savePreference(value);
+    } catch (err) {
+      showWarmupToast(`Could not save close preference: ${formatWarmupError(err)}`, true);
     }
   };
 
@@ -767,7 +770,12 @@ function App() {
       } catch (err) {
         showWarmupToast(`Could not save preference: ${formatWarmupError(err)}`, true);
       }
-      const result = await forceCloseCodexProcesses(shouldReopen);
+      try {
+        codexClose.rememberSelection();
+      } catch (err) {
+        showWarmupToast(`Could not save close preference: ${formatWarmupError(err)}`, true);
+      }
+      const result = await closeCodexProcesses(shouldReopen, codexClose.forceClose);
       if (!result?.processInfo?.can_switch) return;
 
       await finishForceClose(
@@ -775,7 +783,7 @@ function App() {
         accountId ? async () => {
           setSwitchingId(accountId);
           await switchAccount(accountId);
-          showWarmupToast("Switched account after force closing Codex.");
+          showWarmupToast(`Switched account after ${codexClose.forceClose ? "force closing" : "closing"} Codex.`);
         } : null,
         async (token) => {
           try {
@@ -790,8 +798,8 @@ function App() {
         showWarmupToast("No closed desktop app could be identified for reopening. Open Codex manually.", true);
       }
     } catch (err) {
-      console.error("Failed to switch account after force close:", err);
-      showWarmupToast(`Switch failed after force close: ${formatWarmupError(err)}`, true);
+      console.error("Failed to switch account after closing Codex:", err);
+      showWarmupToast(`Switch failed after closing Codex: ${formatWarmupError(err)}`, true);
     } finally {
       setPendingSwitchAccountId(null);
       setSwitchingId(null);
@@ -1228,9 +1236,9 @@ function App() {
     () => accounts.find((account) => account.id === pendingSwitchAccountId),
     [accounts, pendingSwitchAccountId]
   );
-  const forceCloseConfirmLabel = pendingSwitchAccount
-    ? "Force close and switch account"
-    : "Force close running Codex processes";
+  const closeConfirmLabel = pendingSwitchAccount
+    ? "Close and switch account"
+    : "Close Codex";
 
   const sortedOtherAccounts = useMemo(() => {
     const getResetDeadline = (resetAt: number | null | undefined) =>
@@ -1336,6 +1344,7 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+      <WindowResizeBorders isMaximized={isWindowMaximized} />
       <header className="sticky top-0 z-40 border-b border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
         <div className="flex h-9 items-center bg-white px-3 dark:bg-gray-900">
           <div
@@ -1343,11 +1352,11 @@ function App() {
             onDoubleClick={handleTitlebarDoubleClick}
             className={`h-full flex-1 select-none cursor-default ${isMacOs ? "ml-18 mr-2" : "mr-3"}`}
           />
-          {!isMacOs && (
+          {isTauriRuntime() && !isMacOs && (
             <div className="flex items-center gap-1">
               <button
                 onClick={() => {
-                  void appWindow.minimize();
+                  void getTauriWindow()?.minimize();
                 }}
                 className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
                 title="Minimize"
@@ -1358,7 +1367,7 @@ function App() {
               </button>
               <button
                 onClick={() => {
-                  void appWindow.toggleMaximize();
+                  void getTauriWindow()?.toggleMaximize();
                 }}
                 className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100"
                 title={isWindowMaximized ? "Restore" : "Maximize"}
@@ -1376,7 +1385,7 @@ function App() {
               </button>
               <button
                 onClick={() => {
-                  void appWindow.close();
+                  void getTauriWindow()?.close();
                 }}
                 className="flex h-8 w-8 items-center justify-center rounded-md text-gray-500 transition-colors hover:bg-red-500 hover:text-white dark:text-gray-400 dark:hover:bg-red-500 dark:hover:text-white"
                 title="Close"
@@ -1423,9 +1432,9 @@ function App() {
                           }}
                           disabled={isForceClosingCodex}
                           className="inline-flex items-center rounded-md border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-100 disabled:opacity-50 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300 dark:hover:bg-red-900/30"
-                          title="Force close running Codex processes"
+                          title="Close running Codex processes"
                         >
-                          Force close
+                          Close
                         </button>
                       )}
                     </div>
@@ -1975,8 +1984,10 @@ function App() {
 
       {isSettingsOpen && (
         <SettingsModal
-          preference={desktopReopen.preference}
-          onChange={saveDesktopReopenPreference}
+          reopenPreference={desktopReopen.preference}
+          onReopenPreferenceChange={saveDesktopReopenPreference}
+          closePreference={codexClose.preference}
+          onClosePreferenceChange={saveCodexClosePreference}
           onClose={() => setIsSettingsOpen(false)}
         />
       )}
@@ -1986,15 +1997,38 @@ function App() {
           <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl w-full max-w-md mx-4 shadow-xl">
             <div className="p-5 border-b border-gray-100 dark:border-gray-800">
               <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                Force close running Codex processes?
+                Close running Codex processes?
               </h2>
             </div>
             <div className="p-5 space-y-3">
               <p className="text-sm text-gray-600 dark:text-gray-300">
-                This will force close {processInfo?.count ?? 0} Codex process
+                This will {codexClose.forceClose ? "force close" : "gracefully close"} {processInfo?.count ?? 0} Codex process
                 {(processInfo?.count ?? 0) === 1 ? "" : "es"} that currently{" "}
                 {(processInfo?.count ?? 0) === 1 ? "blocks" : "block"} account switching.
               </p>
+              <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
+                {codexClose.preference !== "ask" ? (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    Codex will {codexClose.forceClose ? "be force closed" : "close gracefully"}. You can change this in Settings.
+                  </p>
+                ) : (
+                  <>
+                    <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
+                      <input type="checkbox" checked={codexClose.forceClose} onChange={(event) => codexClose.setForceClose(event.target.checked)} disabled={isForceClosingCodex} className="h-4 w-4 accent-red-600" />
+                      Force close Codex
+                    </label>
+                    <label className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
+                      <input type="checkbox" checked={codexClose.remember} onChange={(event) => codexClose.setRemember(event.target.checked)} disabled={isForceClosingCodex} className="h-4 w-4 accent-orange-600" />
+                      Remember this selection
+                    </label>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      {codexClose.forceClose
+                        ? "Stops Codex immediately. Unsaved work may be lost."
+                        : "Asks Codex to quit normally so it can finish cleanup."}
+                    </p>
+                  </>
+                )}
+              </div>
               {pendingSwitchAccount && (
                 <p className="text-sm text-gray-600 dark:text-gray-300">
                   After closing Codex, Codex Switcher will switch to{" "}
@@ -2018,7 +2052,7 @@ function App() {
                   <>
                     <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-200">
                       <input type="checkbox" checked={desktopReopen.reopen} onChange={(event) => desktopReopen.setReopen(event.target.checked)} disabled={isForceClosingCodex} className="h-4 w-4 accent-orange-600" />
-                      Reopen Codex desktop after force close
+                      Reopen Codex desktop after close
                     </label>
                     <label className="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400">
                       <input type="checkbox" checked={desktopReopen.remember} onChange={(event) => desktopReopen.setRemember(event.target.checked)} disabled={isForceClosingCodex} className="h-4 w-4 accent-orange-600" />
@@ -2030,9 +2064,9 @@ function App() {
                   <p className="text-sm text-gray-500 dark:text-gray-400">No supported desktop app could be identified for reopening. Codex will only be closed.</p>
                 )}
               </div>
-              <p className="text-sm text-red-600 dark:text-red-300">
-                Unsaved Codex work may be lost.
-              </p>
+              {codexClose.forceClose && (
+                <p className="text-sm text-red-600 dark:text-red-300">Unsaved Codex work may be lost.</p>
+              )}
             </div>
             <div className="flex justify-end gap-3 p-5 border-t border-gray-100 dark:border-gray-800">
               <button
@@ -2050,11 +2084,11 @@ function App() {
                   void handleForceCloseConfirm();
                 }}
                 disabled={isForceClosingCodex || desktopReopen.checking}
-                className="px-4 py-2.5 text-sm font-medium rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors disabled:opacity-50"
+                className={`px-4 py-2.5 text-sm font-medium rounded-lg text-white transition-colors disabled:opacity-50 ${codexClose.forceClose ? "bg-red-600 hover:bg-red-700" : "bg-orange-600 hover:bg-orange-700"}`}
               >
                 {isForceClosingCodex
-                  ? "Force closing..."
-                  : forceCloseConfirmLabel}
+                  ? (codexClose.forceClose ? "Force closing..." : "Closing...")
+                  : closeConfirmLabel}
               </button>
             </div>
           </div>

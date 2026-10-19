@@ -239,6 +239,7 @@ pub enum AuthMode {
     /// Using an OpenAI API key
     ApiKey,
     /// Using ChatGPT OAuth tokens
+    #[serde(alias = "chat_gpt", alias = "chatgpt", alias = "chat_g_pt")]
     ChatGPT,
 }
 
@@ -252,6 +253,7 @@ pub enum AuthData {
         key: String,
     },
     /// ChatGPT OAuth authentication
+    #[serde(alias = "chat_gpt", alias = "chatgpt", alias = "chat_g_pt")]
     ChatGPT {
         /// JWT ID token containing user info
         id_token: String,
@@ -360,22 +362,13 @@ pub struct AccountInfo {
 
 impl AccountInfo {
     pub fn from_stored(account: &StoredAccount, active_id: Option<&str>) -> Self {
-        let fallback_subscription_expires_at = match &account.auth_data {
-            AuthData::ChatGPT { id_token, .. } => {
-                parse_chatgpt_id_token_claims(id_token).subscription_expires_at
-            }
-            AuthData::ApiKey { .. } => None,
-        };
-
         Self {
             id: account.id.clone(),
             name: account.name.clone(),
             email: account.email.clone(),
             plan_type: account.plan_type.clone(),
-            subscription_expires_at: account
-                .subscription_expires_at
-                .clone()
-                .or(fallback_subscription_expires_at),
+            // Live subscription expiry belongs to the metadata cache.
+            subscription_expires_at: None,
             auth_mode: account.auth_mode,
             is_active: active_id == Some(&account.id),
             created_at: account.created_at,

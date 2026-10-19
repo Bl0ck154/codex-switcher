@@ -66,8 +66,16 @@ pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson)
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not find home directory")?;
-    Ok(home.join(".codex-switcher"))
+    #[cfg(test)]
+    {
+        Ok(super::test_support::home_dir()?.join(".codex-switcher"))
+    }
+
+    #[cfg(not(test))]
+    {
+        let home = dirs::home_dir().context("Could not find home directory")?;
+        Ok(home.join(".codex-switcher"))
+    }
 }
 
 /// Get the path to accounts.json
@@ -166,7 +174,12 @@ pub const ACCOUNT_REPLACE_CONFIRMATION_PREFIX: &str = "ACCOUNT_REPLACE_CONFIRMAT
 /// Workspace identity is not an email, plan, or user-assigned name.
 /// JWT claims take precedence over a stale cached account ID.
 pub fn chatgpt_workspace_id(account: &StoredAccount) -> Option<String> {
-    let AuthData::ChatGPT { id_token, account_id, .. } = &account.auth_data else {
+    let AuthData::ChatGPT {
+        id_token,
+        account_id,
+        ..
+    } = &account.auth_data
+    else {
         return None;
     };
     parse_chatgpt_id_token_claims(id_token)
@@ -178,7 +191,10 @@ pub fn chatgpt_workspace_id(account: &StoredAccount) -> Option<String> {
 pub fn same_saved_account(existing: &StoredAccount, candidate: &StoredAccount) -> bool {
     match (&existing.auth_data, &candidate.auth_data) {
         (AuthData::ChatGPT { .. }, AuthData::ChatGPT { .. }) => {
-            match (chatgpt_workspace_id(existing), chatgpt_workspace_id(candidate)) {
+            match (
+                chatgpt_workspace_id(existing),
+                chatgpt_workspace_id(candidate),
+            ) {
                 (Some(a), Some(b)) => a == b,
                 _ => false, // Missing identity must never authorize overwriting credentials.
             }
@@ -190,12 +206,20 @@ pub fn same_saved_account(existing: &StoredAccount, candidate: &StoredAccount) -
 
 /// A visual label is not an account identity. Keep separate workspace sessions.
 fn disambiguate_account_name(store: &AccountsStore, account: &mut StoredAccount) {
-    if !store.accounts.iter().any(|saved| saved.name == account.name) {
+    if !store
+        .accounts
+        .iter()
+        .any(|saved| saved.name == account.name)
+    {
         return;
     }
     let base = account.name.clone();
-    let plan = account.plan_type.as_deref().map(str::trim)
-        .filter(|plan| !plan.is_empty()).unwrap_or("workspace");
+    let plan = account
+        .plan_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|plan| !plan.is_empty())
+        .unwrap_or("workspace");
     let mut candidate = format!("{base} ({plan})");
     let mut number = 2;
     while store.accounts.iter().any(|saved| saved.name == candidate) {
@@ -220,7 +244,10 @@ fn replace_account_in_store(
 }
 
 /// Replace the same ChatGPT workspace only, never a different workspace with the same name.
-pub fn add_or_replace_account(account: StoredAccount, force_replace: bool) -> Result<StoredAccount> {
+pub fn add_or_replace_account(
+    account: StoredAccount,
+    force_replace: bool,
+) -> Result<StoredAccount> {
     let mut store = load_accounts()?;
     let saved = add_or_replace_account_to_store(&mut store, account, force_replace)?;
     save_accounts(&store)?;
@@ -232,11 +259,16 @@ fn add_or_replace_account_to_store(
     mut account: StoredAccount,
     force_replace: bool,
 ) -> Result<StoredAccount> {
-    if let Some(index) = store.accounts.iter()
+    if let Some(index) = store
+        .accounts
+        .iter()
         .position(|saved| same_saved_account(saved, &account))
     {
         if !force_replace {
-            anyhow::bail!("{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}", store.accounts[index].name);
+            anyhow::bail!(
+                "{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}",
+                store.accounts[index].name
+            );
         }
         return Ok(replace_account_in_store(store, index, account));
     }
@@ -244,16 +276,18 @@ fn add_or_replace_account_to_store(
     disambiguate_account_name(store, &mut account);
     let saved = account.clone();
     store.accounts.push(account);
-    if store.accounts.len() == 1 {
-        store.active_account_id = Some(saved.id.clone());
-    }
+    // New profiles are saved inactive; explicit Switch changes Codex auth.json.
     Ok(saved)
 }
 
 /// Preserve the non-replacement path for adding new accounts.
 pub fn add_account(account: StoredAccount) -> Result<StoredAccount> {
     let mut store = load_accounts()?;
-    if store.accounts.iter().any(|saved| same_saved_account(saved, &account)) {
+    if store
+        .accounts
+        .iter()
+        .any(|saved| same_saved_account(saved, &account))
+    {
         anyhow::bail!("This account/workspace is already saved");
     }
     let saved = add_or_replace_account_to_store(&mut store, account, false)?;
@@ -461,8 +495,8 @@ pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        add_or_replace_account_to_store, chatgpt_workspace_id,
-        replace_account_in_store, same_saved_account, sync_active_account_tokens,
+        add_or_replace_account_to_store, chatgpt_workspace_id, replace_account_in_store,
+        same_saved_account, sync_active_account_tokens,
     };
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::Engine;
@@ -665,7 +699,10 @@ mod tests {
         let saved = add_or_replace_account_to_store(&mut store, business, true).unwrap();
         assert_eq!(store.accounts.len(), 2);
         assert_eq!(saved.name, "user@example.com (business)");
-        assert_eq!(store.active_account_id.as_deref(), Some(personal_id.as_str()));
+        assert_eq!(
+            store.active_account_id.as_deref(),
+            Some(personal_id.as_str())
+        );
         assert_eq!(refresh_token(&store.accounts[0]), "refresh-personal");
         assert_eq!(refresh_token(&store.accounts[1]), "refresh-business");
     }
@@ -674,7 +711,11 @@ mod tests {
     fn two_business_workspaces_same_email_and_plan_are_distinct() {
         let mut store = AccountsStore::default();
         for n in 1..=3 {
-            let mut candidate = account("shared@example.com", &format!("workspace-{n}"), &n.to_string());
+            let mut candidate = account(
+                "shared@example.com",
+                &format!("workspace-{n}"),
+                &n.to_string(),
+            );
             candidate.plan_type = Some("business".into());
             add_or_replace_account_to_store(&mut store, candidate, false).unwrap();
         }
@@ -708,13 +749,18 @@ mod tests {
         let mut new = account("same@example.com", "new", "new");
         for candidate in [&mut old, &mut new] {
             candidate.auth_data = AuthData::ChatGPT {
-                id_token: "opaque".into(), access_token: "access".into(),
-                refresh_token: "refresh".into(), account_id: None,
+                id_token: "opaque".into(),
+                access_token: "access".into(),
+                refresh_token: "refresh".into(),
+                account_id: None,
             };
         }
         assert!(chatgpt_workspace_id(&old).is_none());
         assert!(!same_saved_account(&old, &new));
-        let mut store = AccountsStore { accounts: vec![old], ..AccountsStore::default() };
+        let mut store = AccountsStore {
+            accounts: vec![old],
+            ..AccountsStore::default()
+        };
         add_or_replace_account_to_store(&mut store, new, true).unwrap();
         assert_eq!(store.accounts.len(), 2);
     }
@@ -725,7 +771,18 @@ mod tests {
         if let AuthData::ChatGPT { id_token, .. } = &mut existing.auth_data {
             *id_token = id_token_with_account_id("actual", "signed");
         }
-        assert!(same_saved_account(&existing, &account("email@example.com", "actual", "b")));
+        assert!(same_saved_account(
+            &existing,
+            &account("email@example.com", "actual", "b")
+        ));
     }
 
+    #[test]
+    fn adding_first_account_does_not_activate_it() {
+        let mut store = AccountsStore::default();
+        add_or_replace_account_to_store(&mut store, account("first", "ws-first", "one"), false)
+            .unwrap();
+        assert_eq!(store.accounts.len(), 1);
+        assert!(store.active_account_id.is_none());
+    }
 }
