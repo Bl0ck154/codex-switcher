@@ -163,6 +163,48 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
 
 pub const ACCOUNT_REPLACE_CONFIRMATION_PREFIX: &str = "ACCOUNT_REPLACE_CONFIRMATION_REQUIRED:";
 
+/// Workspace identity is not an email, plan, or user-assigned name.
+/// JWT claims take precedence over a stale cached account ID.
+pub fn chatgpt_workspace_id(account: &StoredAccount) -> Option<String> {
+    let AuthData::ChatGPT { id_token, account_id, .. } = &account.auth_data else {
+        return None;
+    };
+    parse_chatgpt_id_token_claims(id_token)
+        .account_id
+        .or_else(|| account_id.clone())
+        .filter(|id| !id.trim().is_empty())
+}
+
+pub fn same_saved_account(existing: &StoredAccount, candidate: &StoredAccount) -> bool {
+    match (&existing.auth_data, &candidate.auth_data) {
+        (AuthData::ChatGPT { .. }, AuthData::ChatGPT { .. }) => {
+            match (chatgpt_workspace_id(existing), chatgpt_workspace_id(candidate)) {
+                (Some(a), Some(b)) => a == b,
+                _ => false, // Missing identity must never authorize overwriting credentials.
+            }
+        }
+        (AuthData::ApiKey { .. }, AuthData::ApiKey { .. }) => existing.name == candidate.name,
+        _ => false,
+    }
+}
+
+/// A visual label is not an account identity. Keep separate workspace sessions.
+fn disambiguate_account_name(store: &AccountsStore, account: &mut StoredAccount) {
+    if !store.accounts.iter().any(|saved| saved.name == account.name) {
+        return;
+    }
+    let base = account.name.clone();
+    let plan = account.plan_type.as_deref().map(str::trim)
+        .filter(|plan| !plan.is_empty()).unwrap_or("workspace");
+    let mut candidate = format!("{base} ({plan})");
+    let mut number = 2;
+    while store.accounts.iter().any(|saved| saved.name == candidate) {
+        candidate = format!("{base} ({plan} {number})");
+        number += 1;
+    }
+    account.name = candidate;
+}
+
 fn replace_account_in_store(
     store: &mut AccountsStore,
     existing_index: usize,
@@ -170,61 +212,53 @@ fn replace_account_in_store(
 ) -> StoredAccount {
     let existing = &store.accounts[existing_index];
     replacement.id = existing.id.clone();
+    replacement.name = existing.name.clone(); // Preserve custom name on re-login.
     replacement.created_at = existing.created_at;
     replacement.last_used_at = existing.last_used_at;
     store.accounts[existing_index] = replacement.clone();
     replacement
 }
 
-/// Add or replace an account after the caller has made the duplicate-health decision.
-///
-/// Duplicate replacement requires force_replace=true. Replacement keeps the
-/// original internal account ID, creation time and last-used timestamp.
-pub fn add_or_replace_account(
-    account: StoredAccount,
-    force_replace: bool,
-) -> Result<StoredAccount> {
+/// Replace the same ChatGPT workspace only, never a different workspace with the same name.
+pub fn add_or_replace_account(account: StoredAccount, force_replace: bool) -> Result<StoredAccount> {
     let mut store = load_accounts()?;
-
-    if let Some(existing_index) = store.accounts.iter().position(|a| a.name == account.name) {
-        if !force_replace {
-            anyhow::bail!("{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}", account.name);
-        }
-
-        let replaced = replace_account_in_store(&mut store, existing_index, account);
-        save_accounts(&store)?;
-        return Ok(replaced);
-    }
-
-    let account_clone = account.clone();
-    store.accounts.push(account);
-
-    // If this is the first account, make it active
-    if store.accounts.len() == 1 {
-        store.active_account_id = Some(account_clone.id.clone());
-    }
-
+    let saved = add_or_replace_account_to_store(&mut store, account, force_replace)?;
     save_accounts(&store)?;
-    Ok(account_clone)
+    Ok(saved)
 }
 
-/// Add a new account to the store, preserving the historical reject-on-duplicate behavior.
+fn add_or_replace_account_to_store(
+    store: &mut AccountsStore,
+    mut account: StoredAccount,
+    force_replace: bool,
+) -> Result<StoredAccount> {
+    if let Some(index) = store.accounts.iter()
+        .position(|saved| same_saved_account(saved, &account))
+    {
+        if !force_replace {
+            anyhow::bail!("{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}", store.accounts[index].name);
+        }
+        return Ok(replace_account_in_store(store, index, account));
+    }
+
+    disambiguate_account_name(store, &mut account);
+    let saved = account.clone();
+    store.accounts.push(account);
+    if store.accounts.len() == 1 {
+        store.active_account_id = Some(saved.id.clone());
+    }
+    Ok(saved)
+}
+
+/// Preserve the non-replacement path for adding new accounts.
 pub fn add_account(account: StoredAccount) -> Result<StoredAccount> {
     let mut store = load_accounts()?;
-
-    if store.accounts.iter().any(|a| a.name == account.name) {
-        anyhow::bail!("An account with name '{}' already exists", account.name);
+    if store.accounts.iter().any(|saved| same_saved_account(saved, &account)) {
+        anyhow::bail!("This account/workspace is already saved");
     }
-
-    let account_clone = account.clone();
-    store.accounts.push(account);
-
-    if store.accounts.len() == 1 {
-        store.active_account_id = Some(account_clone.id.clone());
-    }
-
+    let saved = add_or_replace_account_to_store(&mut store, account, false)?;
     save_accounts(&store)?;
-    Ok(account_clone)
+    Ok(saved)
 }
 
 /// Remove an account by ID
@@ -426,7 +460,10 @@ pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{replace_account_in_store, sync_active_account_tokens};
+    use super::{
+        add_or_replace_account_to_store, chatgpt_workspace_id,
+        replace_account_in_store, same_saved_account, sync_active_account_tokens,
+    };
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::Engine;
     use chrono::{Duration, Utc};
@@ -609,4 +646,86 @@ mod tests {
         );
         assert_eq!(refresh_token(&store.accounts[0]), "refresh-new");
     }
+    #[test]
+    fn personal_and_business_with_same_email_keep_separate_sessions() {
+        let mut personal = account("user@example.com", "personal-workspace", "personal");
+        personal.email = Some("user@example.com".into());
+        personal.plan_type = Some("plus".into());
+        let personal_id = personal.id.clone();
+        let mut business = account("user@example.com", "business-workspace", "business");
+        business.email = personal.email.clone();
+        business.plan_type = Some("business".into());
+        let mut store = AccountsStore {
+            accounts: vec![personal],
+            active_account_id: Some(personal_id.clone()),
+            ..AccountsStore::default()
+        };
+
+        // Even a confirmed replacement cannot overwrite a different workspace.
+        let saved = add_or_replace_account_to_store(&mut store, business, true).unwrap();
+        assert_eq!(store.accounts.len(), 2);
+        assert_eq!(saved.name, "user@example.com (business)");
+        assert_eq!(store.active_account_id.as_deref(), Some(personal_id.as_str()));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-personal");
+        assert_eq!(refresh_token(&store.accounts[1]), "refresh-business");
+    }
+
+    #[test]
+    fn two_business_workspaces_same_email_and_plan_are_distinct() {
+        let mut store = AccountsStore::default();
+        for n in 1..=3 {
+            let mut candidate = account("shared@example.com", &format!("workspace-{n}"), &n.to_string());
+            candidate.plan_type = Some("business".into());
+            add_or_replace_account_to_store(&mut store, candidate, false).unwrap();
+        }
+        assert_eq!(store.accounts.len(), 3);
+        assert_eq!(store.accounts[1].name, "shared@example.com (business)");
+        assert_eq!(store.accounts[2].name, "shared@example.com (business 2)");
+    }
+
+    #[test]
+    fn relogin_same_workspace_preserves_internal_id_and_custom_name() {
+        let original = account("My work", "workspace-one", "old");
+        let original_id = original.id.clone();
+        let mut store = AccountsStore {
+            accounts: vec![original],
+            ..AccountsStore::default()
+        };
+        let renewed = account("user@example.com", "workspace-one", "new");
+        assert!(same_saved_account(&store.accounts[0], &renewed));
+        assert!(add_or_replace_account_to_store(&mut store, renewed.clone(), false).is_err());
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-old");
+        let saved = add_or_replace_account_to_store(&mut store, renewed, true).unwrap();
+        assert_eq!(store.accounts.len(), 1);
+        assert_eq!(saved.id, original_id);
+        assert_eq!(saved.name, "My work");
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-new");
+    }
+
+    #[test]
+    fn unknown_workspace_identity_is_never_overwritten_by_name() {
+        let mut old = account("same@example.com", "old", "old");
+        let mut new = account("same@example.com", "new", "new");
+        for candidate in [&mut old, &mut new] {
+            candidate.auth_data = AuthData::ChatGPT {
+                id_token: "opaque".into(), access_token: "access".into(),
+                refresh_token: "refresh".into(), account_id: None,
+            };
+        }
+        assert!(chatgpt_workspace_id(&old).is_none());
+        assert!(!same_saved_account(&old, &new));
+        let mut store = AccountsStore { accounts: vec![old], ..AccountsStore::default() };
+        add_or_replace_account_to_store(&mut store, new, true).unwrap();
+        assert_eq!(store.accounts.len(), 2);
+    }
+
+    #[test]
+    fn token_claim_precedes_stale_denormalized_workspace_id() {
+        let mut existing = account("email@example.com", "stale", "a");
+        if let AuthData::ChatGPT { id_token, .. } = &mut existing.auth_data {
+            *id_token = id_token_with_account_id("actual", "signed");
+        }
+        assert!(same_saved_account(&existing, &account("email@example.com", "actual", "b")));
+    }
+
 }

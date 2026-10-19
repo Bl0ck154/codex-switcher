@@ -10,8 +10,8 @@ use std::{
 use tokio::time::{sleep, Duration};
 
 use super::{
-    load_accounts, read_current_auth, save_accounts, switch_to_account, sync_active_account_tokens,
-    update_account_chatgpt_tokens, AUTH_OPERATION_LOCK,
+    load_accounts, read_current_auth, same_saved_account, save_accounts, switch_to_account,
+    sync_active_account_tokens, update_account_chatgpt_tokens, AUTH_OPERATION_LOCK,
 };
 use crate::types::{
     parse_chatgpt_id_token_claims, AccountsStore, AuthData, AuthDotJson, StoredAccount,
@@ -317,19 +317,6 @@ fn chatgpt_access_token_needs_refresh(account: &StoredAccount) -> bool {
     }
 }
 
-fn account_identity(account: &StoredAccount) -> Option<String> {
-    match &account.auth_data {
-        AuthData::ApiKey { .. } => None,
-        AuthData::ChatGPT {
-            id_token,
-            account_id,
-            ..
-        } => account_id
-            .clone()
-            .or_else(|| parse_chatgpt_id_token_claims(id_token).account_id),
-    }
-}
-
 fn refresh_error_invalidates_saved_session(error: &anyhow::Error) -> bool {
     let message = format!("{error:#}").to_lowercase();
     message.contains("refresh_token_invalidated")
@@ -354,21 +341,11 @@ pub async fn duplicate_account_requires_confirmation(candidate: &StoredAccount) 
     let Some(existing) = store
         .accounts
         .iter()
-        .find(|account| account.name == candidate.name)
+        .find(|account| same_saved_account(account, candidate))
         .cloned()
     else {
         return Ok(false);
     };
-
-    // Same display name but a known different ChatGPT identity is not a stale
-    // re-login of the same account. Never replace that silently.
-    if let (Some(existing_id), Some(candidate_id)) =
-        (account_identity(&existing), account_identity(candidate))
-    {
-        if existing_id != candidate_id {
-            return Ok(true);
-        }
-    }
 
     if matches!(existing.auth_data, AuthData::ApiKey { .. }) {
         return Ok(true);
