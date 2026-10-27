@@ -10,7 +10,7 @@ use std::{
 use tokio::time::{sleep, Duration};
 
 use super::{
-    load_accounts, read_current_auth, same_saved_account, save_accounts, switch_to_account,
+    load_accounts, mutate_accounts, read_current_auth, same_saved_account, switch_to_account,
     sync_active_account_tokens, update_account_chatgpt_tokens, AUTH_OPERATION_LOCK,
 };
 use crate::types::{
@@ -260,23 +260,25 @@ fn reconcile_active_account_from_auth(
 }
 
 fn load_account_reconciling_live_auth(account_id: &str) -> Result<(StoredAccount, bool)> {
-    let mut store = load_accounts()?;
-    let is_active = store.active_account_id.as_deref() == Some(account_id);
+    let live_auth = read_current_auth()?;
 
-    if is_active {
-        if let Some(auth) = read_current_auth()? {
-            if reconcile_active_account_from_auth(&mut store, account_id, &auth) {
-                save_accounts(&store)?;
+    mutate_accounts(|store| {
+        let is_active = store.active_account_id.as_deref() == Some(account_id);
+
+        if is_active {
+            if let Some(auth) = live_auth.as_ref() {
+                reconcile_active_account_from_auth(store, account_id, auth);
             }
         }
-    }
 
-    let account = store
-        .accounts
-        .into_iter()
-        .find(|stored| stored.id == account_id)
-        .context("Account not found")?;
-    Ok((account, is_active))
+        let account = store
+            .accounts
+            .iter()
+            .find(|stored| stored.id == account_id)
+            .cloned()
+            .context("Account not found")?;
+        Ok((account, is_active))
+    })
 }
 
 /// Build a new ChatGPT account from a refresh token.
