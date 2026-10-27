@@ -213,7 +213,11 @@ fn add_account_to_store(
         }
     }
 
-    if store.accounts.iter().any(|saved| saved.name == account.name) {
+    if store
+        .accounts
+        .iter()
+        .any(|saved| saved.name == account.name)
+    {
         // Retain the existing duplicate-name behavior for API keys and for
         // ChatGPT credentials with no trustworthy workspace ID.
         if workspace_id.is_none() {
@@ -536,8 +540,11 @@ mod tests {
     fn multiple_business_workspaces_get_unique_names() {
         let mut store = AccountsStore::default();
         for n in 1..=3 {
-            let mut candidate =
-                account("shared@example.com", &format!("workspace-{n}"), &n.to_string());
+            let mut candidate = account(
+                "shared@example.com",
+                &format!("workspace-{n}"),
+                &n.to_string(),
+            );
             candidate.plan_type = Some("business".into());
             add_account_to_store(&mut store, candidate).unwrap();
         }
@@ -567,11 +574,7 @@ mod tests {
             *id_token = id_token_with_account_id("actual-workspace", "sig");
         }
         add_account_to_store(&mut store, saved).unwrap();
-        assert!(add_account_to_store(
-            &mut store,
-            account("B", "actual-workspace", "new")
-        )
-        .is_err());
+        assert!(add_account_to_store(&mut store, account("B", "actual-workspace", "new")).is_err());
     }
 
     #[test]
@@ -605,8 +608,11 @@ mod tests {
     #[test]
     fn api_key_duplicate_names_still_fail() {
         let mut store = AccountsStore::default();
-        add_account_to_store(&mut store, StoredAccount::new_api_key("API".into(), "key-1".into()))
-            .unwrap();
+        add_account_to_store(
+            &mut store,
+            StoredAccount::new_api_key("API".into(), "key-1".into()),
+        )
+        .unwrap();
         assert!(add_account_to_store(
             &mut store,
             StoredAccount::new_api_key("API".into(), "key-2".into())
