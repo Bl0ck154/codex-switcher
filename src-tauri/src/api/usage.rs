@@ -508,7 +508,11 @@ fn convert_payload_to_usage_info(account_id: &str, payload: RateLimitStatusPaylo
 
 fn quota_number(value: Option<&Value>) -> Option<f64> {
     value
-        .and_then(|value| value.as_f64().or_else(|| value.as_str()?.parse::<f64>().ok()))
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str()?.parse::<f64>().ok())
+        })
         .filter(|value| value.is_finite())
 }
 
