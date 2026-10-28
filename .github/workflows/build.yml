@@ -26,7 +26,7 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             name: macos-arm64
-          - platform: macos-latest
+          - platform: macos-15-intel
             target: x86_64-apple-darwin
             name: macos-x64
           - platform: ubuntu-22.04
@@ -78,6 +78,25 @@ jobs:
             echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Verify release tag matches source versions
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const read = (path) => fs.readFileSync(path, 'utf8');
+          const pkg = JSON.parse(read('package.json')).version;
+          const tauri = JSON.parse(read('src-tauri/tauri.conf.json')).version;
+          const cargo = read('src-tauri/Cargo.toml').match(/^version\s*=\s*"(\d+\.\d+\.\d+)"/m)?.[1];
+          const lock = read('src-tauri/Cargo.lock').match(/\[\[package\]\]\nname = "codex-switcher"\nversion = "(\d+\.\d+\.\d+)"/)?.[1];
+          if (!pkg || pkg !== tauri || pkg !== cargo || pkg !== lock || process.env.RELEASE_TAG !== 'v' + pkg) {
+            console.error('::error::Release tag and application versions do not match');
+            process.exit(1);
+          }
+          console.log('Verified release version', pkg);
+          NODE
+
       - name: Determine release note
         id: release_note
         shell: bash
@@ -107,7 +126,9 @@ jobs:
           releaseName: ${{ steps.tag.outputs.tag }}
           releaseBody: ${{ steps.release_note.outputs.note }}
           generateReleaseNotes: true
-          releaseDraft: false
+          # Keep partial builds hidden until all OS bundles, signatures and
+          # latest.json are verified, particularly when ARM64 runners stall.
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
           updaterJsonKeepUniversal: true
