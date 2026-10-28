@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use base64::Engine;
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use std::{
     collections::HashSet,
     sync::{Mutex, OnceLock},
@@ -19,7 +19,9 @@ use crate::types::{
 
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
-const EXPIRY_SKEW_SECONDS: i64 = 60;
+const ID_TOKEN_REFRESH_WINDOW_SECONDS: i64 = 60;
+const ACCESS_TOKEN_REFRESH_WINDOW_SECONDS: i64 = 5 * 60;
+const OPAQUE_ACCESS_TOKEN_REFRESH_INTERVAL_DAYS: i64 = 8;
 
 static STALE_CHATGPT_SESSION_IDS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -143,8 +145,9 @@ async fn ensure_chatgpt_tokens_fresh_with_policy_locked(
         } => {
             let needs_refresh = if require_fresh_id_token {
                 chatgpt_tokens_need_refresh_at(id_token, access_token, Utc::now().timestamp())
+                    || chatgpt_access_token_needs_refresh(&current)
             } else {
-                token_expired_or_near_expiry_at(access_token, Utc::now().timestamp())
+                chatgpt_access_token_needs_refresh(&current)
             };
 
             if needs_refresh {
@@ -313,9 +316,11 @@ pub async fn create_chatgpt_account_from_refresh_token(
 fn chatgpt_access_token_needs_refresh(account: &StoredAccount) -> bool {
     match &account.auth_data {
         AuthData::ApiKey { .. } => false,
-        AuthData::ChatGPT { access_token, .. } => {
-            token_expired_or_near_expiry_at(access_token, Utc::now().timestamp())
-        }
+        AuthData::ChatGPT { access_token, .. } => should_refresh_proactively_at(
+            access_token,
+            account.last_refresh_at.map(|time| time.timestamp()),
+            Utc::now().timestamp(),
+        ),
     }
 }
 
@@ -388,6 +393,23 @@ fn can_switch_with_existing_access_token(account: &StoredAccount) -> bool {
     !chatgpt_access_token_needs_refresh(account)
 }
 
+/// JWT access tokens refresh five minutes before expiry. For tokens that
+/// do not expose a parseable expiry, use the last persisted refresh time so
+/// a still-valid opaque token is not rotated on every usage request.
+fn should_refresh_proactively_at(
+    access_token: &str,
+    last_refresh_at: Option<i64>,
+    now: i64,
+) -> bool {
+    if parse_jwt_exp(access_token).is_some() {
+        return token_expired_or_near_expiry_at(access_token, now);
+    }
+
+    last_refresh_at.is_some_and(|time| {
+        time < now - ChronoDuration::days(OPAQUE_ACCESS_TOKEN_REFRESH_INTERVAL_DAYS).num_seconds()
+    })
+}
+
 fn chatgpt_tokens_need_refresh(account: &StoredAccount) -> bool {
     match &account.auth_data {
         AuthData::ApiKey { .. } => false,
@@ -405,14 +427,14 @@ fn chatgpt_tokens_need_refresh_at(id_token: &str, access_token: &str, now: i64) 
 
 fn id_token_needs_refresh_at(token: &str, now: i64) -> bool {
     match parse_jwt_exp(token) {
-        Some(expiry) => expiry <= now + EXPIRY_SKEW_SECONDS,
+        Some(expiry) => expiry <= now + ID_TOKEN_REFRESH_WINDOW_SECONDS,
         None => true,
     }
 }
 
 fn token_expired_or_near_expiry_at(token: &str, now: i64) -> bool {
     match parse_jwt_exp(token) {
-        Some(expiry) => expiry <= now + EXPIRY_SKEW_SECONDS,
+        Some(expiry) => expiry <= now + ACCESS_TOKEN_REFRESH_WINDOW_SECONDS,
         None => false,
     }
 }
@@ -556,7 +578,8 @@ mod tests {
         chatgpt_tokens_need_refresh, chatgpt_tokens_need_refresh_at, clear_saved_session_stale,
         format_token_refresh_error, mark_saved_session_stale, merge_refresh_response,
         reconcile_active_account_from_auth, refresh_error_invalidates_saved_session,
-        resolve_refreshed_id_token, take_saved_session_stale, RefreshTokenResponse,
+        resolve_refreshed_id_token, should_refresh_proactively_at, take_saved_session_stale,
+        token_expired_or_near_expiry_at, RefreshTokenResponse,
     };
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -571,6 +594,56 @@ mod tests {
             r#"{{"exp":{exp},"https://api.openai.com/auth":{{"chatgpt_account_id":"{account_id}"}}}}"#
         ));
         format!("header.{payload}.{signature}")
+    }
+
+    #[test]
+    fn jwt_access_token_refreshes_at_five_minute_boundary() {
+        let now = 1_800_000_000;
+        assert!(token_expired_or_near_expiry_at(
+            &jwt_with_exp(now + 300),
+            now
+        ));
+        assert!(!token_expired_or_near_expiry_at(
+            &jwt_with_exp(now + 301),
+            now
+        ));
+    }
+
+    #[test]
+    fn opaque_access_tokens_refresh_only_when_known_age_exceeds_eight_days() {
+        let now = 1_800_000_000;
+        let days = 24 * 60 * 60;
+        assert!(!should_refresh_proactively_at("opaque", None, now));
+        assert!(!should_refresh_proactively_at(
+            "opaque",
+            Some(now - 7 * days),
+            now
+        ));
+        assert!(!should_refresh_proactively_at(
+            "opaque",
+            Some(now - 8 * days),
+            now
+        ));
+        assert!(should_refresh_proactively_at(
+            "opaque",
+            Some(now - (8 * days + 1)),
+            now
+        ));
+    }
+
+    #[test]
+    fn jwt_expiry_takes_precedence_over_refresh_age() {
+        let now = 1_800_000_000;
+        assert!(!should_refresh_proactively_at(
+            &jwt_with_exp(now + 3600),
+            Some(1),
+            now
+        ));
+        assert!(should_refresh_proactively_at(
+            &jwt_with_exp(now - 1),
+            None,
+            now
+        ));
     }
 
     #[test]
