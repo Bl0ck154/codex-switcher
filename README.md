@@ -270,6 +270,27 @@ pnpm release patch -- --push
 
 # For non-interactive use, pass the note explicitly.
 pnpm release patch -- --push --note "Fixed account switching issues"
+
+The **Build & Release** GitHub Actions workflow now creates a **draft** release.
+Publishing is a separate manual approval step; a tag push alone must not make
+an incomplete update available via `releases/latest`.
+
+Before publishing a new release:
+
+1. Confirm the CI jobs and all **four release builds** completed successfully:
+   macOS Apple Silicon (arm64), macOS Intel (x64), Windows x64, and Linux x64.
+   Do **not** treat the PR's Intel macOS compile check as an ARM64 release check.
+2. Inspect the draft's platform installers, updater archives and corresponding
+   `.sig` files. Confirm `latest.json` includes the expected platform URLs,
+   signatures and the new version.
+3. Verify the release tag and source versions match, and test installation and
+   updater behavior on the platform(s) available to you.
+4. Only then publish the GitHub draft. If the ARM64 hosted runner fails to start,
+   leave the release as a draft and retry that build after runner capacity recovers.
+
+Never publish an incomplete updater manifest or change the updater signing key
+without a compatible migration plan.
+
 ```
 
 ### Re-login after an authentication error
