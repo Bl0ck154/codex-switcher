@@ -46,9 +46,11 @@ mod auth_operation_tests {
     async fn second_auth_operation_waits_until_first_releases() {
         let _home = TestHome::new();
         let first = acquire_auth_operation_lock().await.unwrap();
-        assert!(timeout(Duration::from_millis(60), acquire_auth_operation_lock())
-            .await
-            .is_err());
+        assert!(
+            timeout(Duration::from_millis(60), acquire_auth_operation_lock())
+                .await
+                .is_err()
+        );
         drop(first);
         let second = timeout(Duration::from_secs(2), acquire_auth_operation_lock())
             .await
