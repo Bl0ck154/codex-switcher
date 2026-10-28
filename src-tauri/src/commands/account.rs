@@ -850,6 +850,7 @@ pub async fn set_masked_account_ids(ids: Vec<String>) -> Result<(), String> {
 #[cfg(test)]
 mod automatic_switch_tests {
     use super::*;
+    use crate::auth::save_accounts;
 
     #[tokio::test(flavor = "current_thread")]
     async fn automatic_switch_rechecks_source_after_waiting_for_auth_lock() {
