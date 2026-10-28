@@ -289,13 +289,13 @@ async fn relogin_rejects_wrong_workspace_missing_account_and_cancelled_result() 
     .unwrap();
     let before = fs::read(get_accounts_file().unwrap()).unwrap();
     relogin_result(&old, account("wrong-workspace"));
-    assert!(complete_login()
+    assert!(complete_login(None)
         .await
         .unwrap_err()
         .contains("does not match"));
     assert_eq!(fs::read(get_accounts_file().unwrap()).unwrap(), before);
     relogin_result(&account("deleted"), account("renew"));
-    assert!(complete_login()
+    assert!(complete_login(None)
         .await
         .unwrap_err()
         .contains("no longer exists"));
