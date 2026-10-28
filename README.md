@@ -35,7 +35,7 @@
 
 The easiest way to install Codex Switcher is from the latest GitHub release:
 
-[Download the latest release](https://github.com/Lampese/codex-switcher/releases/latest)
+[Download the latest release of this fork](https://github.com/Bl0ck154/codex-switcher/releases/latest)
 
 Choose the file for your platform:
 
@@ -56,9 +56,17 @@ Choose the file for your platform:
 
 ### Auto Updates
 
-Codex Switcher checks the latest GitHub release on startup. When a newer signed
-update package is available, the app shows an update prompt and can install it
-from inside the app.
+Codex Switcher checks this fork's latest signed GitHub release on startup and
+then every 6 hours. When a newer package is available, the app shows an Update
+prompt and can install it inside the app. To check on demand, open **Settings →
+App updates → Check for Updates**. A manual check shows either an available
+update, confirmation that the app is current, or a visible error.
+
+On Windows, use the NSIS setup executable (`-setup.exe`) when upgrading an
+existing NSIS installation. If the installer displays "Uninstall before
+installing", it is replacing the application files, not requesting you delete
+your saved account store (`~/.codex-switcher/accounts.json`). Back up the store
+before changing installations.
 
 ### Build from Source
 
