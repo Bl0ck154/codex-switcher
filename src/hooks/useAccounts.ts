@@ -324,15 +324,16 @@ export function useAccounts() {
   );
 
   const importFromFile = useCallback(
-    async (source: FileSource, name: string) => {
+    async (source: FileSource, name: string, forceReplace = false) => {
       try {
         if (typeof source === "string") {
-          await invokeBackend<AccountInfo>("add_account_from_file", { path: source, name });
+          await invokeBackend<AccountInfo>("add_account_from_file", { path: source, name, forceReplace });
         } else {
           const contents = await source.text();
           await invokeBackend<AccountInfo>("add_account_from_auth_json_text", {
             name,
             contents,
+            forceReplace,
           });
         }
         const accountList = await loadAccounts();
@@ -344,11 +345,11 @@ export function useAccounts() {
     [loadAccounts, refreshUsage]
   );
 
-  const startOAuthLogin = useCallback(async (accountName: string) => {
+  const startOAuthLogin = useCallback(async (accountName: string, reauthAccountId?: string) => {
     try {
       const info = await invokeBackend<{ auth_url: string; callback_port: number }>(
         "start_login",
-        { accountName }
+        { accountName, reauthAccountId }
       );
       return info;
     } catch (err) {
@@ -356,9 +357,9 @@ export function useAccounts() {
     }
   }, []);
 
-  const completeOAuthLogin = useCallback(async () => {
+  const completeOAuthLogin = useCallback(async (forceReplace = false) => {
     try {
-      const account = await invokeBackend<AccountInfo>("complete_login");
+      const account = await invokeBackend<AccountInfo>("complete_login", { forceReplace });
       const accountList = await loadAccounts();
       await refreshUsage(accountList);
       return account;
@@ -424,6 +425,7 @@ export function useAccounts() {
       await invokeBackend("cancel_login");
     } catch (err) {
       console.error("Failed to cancel login:", err);
+      throw err;
     }
   }, []);
 

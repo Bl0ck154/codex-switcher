@@ -126,6 +126,8 @@ struct RenameAccountArgs {
 struct LoginArgs {
     #[serde(alias = "account_name")]
     account_name: String,
+    #[serde(default, alias = "reauth_account_id")]
+    reauth_account_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -384,7 +386,7 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
         }
         "start_login" => {
             let args: LoginArgs = parse_args(payload)?;
-            to_json(start_login(args.account_name).await?)
+            to_json(start_login(args.account_name, args.reauth_account_id).await?)
         }
         "complete_login" => {
             let args = if payload.is_null() {
