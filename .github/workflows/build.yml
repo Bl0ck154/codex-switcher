@@ -85,7 +85,7 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           import fs from 'node:fs';
-          const read = (path) => fs.readFileSync(path, 'utf8');
+          const read = (path) => fs.readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
           const pkg = JSON.parse(read('package.json')).version;
           const tauri = JSON.parse(read('src-tauri/tauri.conf.json')).version;
           const cargo = read('src-tauri/Cargo.toml').match(/^version\s*=\s*"(\d+\.\d+\.\d+)"/m)?.[1];
