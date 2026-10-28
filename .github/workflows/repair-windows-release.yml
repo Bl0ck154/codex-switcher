@@ -55,7 +55,7 @@ jobs:
           }
           console.log('Verified tag and version', process.env.RELEASE_TAG);
           NODE
-          draft=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .draft)
+          draft=$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
           if [ "$draft" != "true" ]; then
             echo "::error::A draft release must already exist for $RELEASE_TAG"
             exit 1
