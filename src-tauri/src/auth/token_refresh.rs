@@ -320,7 +320,7 @@ fn chatgpt_access_token_needs_refresh(account: &StoredAccount) -> bool {
             access_token,
             account.last_refresh_at.map(|time| time.timestamp()),
             Utc::now().timestamp(),
-        )
+        ),
     }
 }
 
@@ -599,8 +599,14 @@ mod tests {
     #[test]
     fn jwt_access_token_refreshes_at_five_minute_boundary() {
         let now = 1_800_000_000;
-        assert!(token_expired_or_near_expiry_at(&jwt_with_exp(now + 300), now));
-        assert!(!token_expired_or_near_expiry_at(&jwt_with_exp(now + 301), now));
+        assert!(token_expired_or_near_expiry_at(
+            &jwt_with_exp(now + 300),
+            now
+        ));
+        assert!(!token_expired_or_near_expiry_at(
+            &jwt_with_exp(now + 301),
+            now
+        ));
     }
 
     #[test]
@@ -608,16 +614,36 @@ mod tests {
         let now = 1_800_000_000;
         let days = 24 * 60 * 60;
         assert!(!should_refresh_proactively_at("opaque", None, now));
-        assert!(!should_refresh_proactively_at("opaque", Some(now - 7 * days), now));
-        assert!(!should_refresh_proactively_at("opaque", Some(now - 8 * days), now));
-        assert!(should_refresh_proactively_at("opaque", Some(now - (8 * days + 1)), now));
+        assert!(!should_refresh_proactively_at(
+            "opaque",
+            Some(now - 7 * days),
+            now
+        ));
+        assert!(!should_refresh_proactively_at(
+            "opaque",
+            Some(now - 8 * days),
+            now
+        ));
+        assert!(should_refresh_proactively_at(
+            "opaque",
+            Some(now - (8 * days + 1)),
+            now
+        ));
     }
 
     #[test]
     fn jwt_expiry_takes_precedence_over_refresh_age() {
         let now = 1_800_000_000;
-        assert!(!should_refresh_proactively_at(&jwt_with_exp(now + 3600), Some(1), now));
-        assert!(should_refresh_proactively_at(&jwt_with_exp(now - 1), None, now));
+        assert!(!should_refresh_proactively_at(
+            &jwt_with_exp(now + 3600),
+            Some(1),
+            now
+        ));
+        assert!(should_refresh_proactively_at(
+            &jwt_with_exp(now - 1),
+            None,
+            now
+        ));
     }
 
     #[test]
