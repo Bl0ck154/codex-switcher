@@ -6,7 +6,7 @@ use crate::auth::{
     get_active_account, import_from_auth_json, import_from_auth_json_contents, load_accounts,
     mutate_accounts, read_current_auth, remove_account, set_active_account, switch_to_account,
     sync_active_account_tokens, touch_account, ACCOUNT_REPLACE_CONFIRMATION_PREFIX,
-    AUTH_OPERATION_LOCK,
+    acquire_auth_operation_lock,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
@@ -170,7 +170,7 @@ pub async fn switch_account(account_id: String) -> Result<(), String> {
 }
 
 pub async fn switch_account_by_id(account_id: &str) -> Result<(), String> {
-    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    let _auth_guard = acquire_auth_operation_lock().await.map_err(|e| e.to_string())?;
     let mut store = load_accounts().map_err(|e| e.to_string())?;
 
     let target_index = store
