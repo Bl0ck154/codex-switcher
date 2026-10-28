@@ -1,0 +1,81 @@
+name: Repair Windows draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Existing draft release tag (for example, v0.2.22)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  repair-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout the exact release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Verify tag and existing draft
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          const read = (path) => fs.readFileSync(path, 'utf8').replace(/\r\n/g, '\n');
+          const pkg = JSON.parse(read('package.json')).version;
+          const tauri = JSON.parse(read('src-tauri/tauri.conf.json')).version;
+          const cargo = read('src-tauri/Cargo.toml').match(/^version\s*=\s*"(\d+\.\d+\.\d+)"/m)?.[1];
+          const lock = read('src-tauri/Cargo.lock').match(/\[\[package\]\]\nname = "codex-switcher"\nversion = "(\d+\.\d+\.\d+)"/)?.[1];
+          if (!pkg || pkg !== tauri || pkg !== cargo || pkg !== lock || process.env.RELEASE_TAG !== 'v' + pkg) {
+            console.error('::error::Release tag and application versions do not match');
+            process.exit(1);
+          }
+          console.log('Verified tag and version', process.env.RELEASE_TAG);
+          NODE
+          draft=$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)
+          if [ "$draft" != "true" ]; then
+            echo "::error::A draft release must already exist for $RELEASE_TAG"
+            exit 1
+          fi
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build signed Windows bundles into existing draft
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ inputs.version }}
+          releaseName: ${{ inputs.version }}
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          updaterJsonKeepUniversal: true
+          retryAttempts: 3
+          args: --target x86_64-pc-windows-msvc

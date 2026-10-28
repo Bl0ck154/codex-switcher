@@ -291,6 +291,19 @@ Before publishing a new release:
 Never publish an incomplete updater manifest or change the updater signing key
 without a compatible migration plan.
 
+If only the Windows release build fails, repair that platform without rebuilding
+the already signed macOS and Linux bundles. First ensure the failed release has
+a draft on GitHub, then run this workflow from the current `main`:
+
+```bash
+gh workflow run repair-windows-release.yml -R Bl0ck154/codex-switcher --ref main -f version=v0.2.22
+```
+
+The repair workflow checks out the **existing release tag** for its source,
+checks the versions, and uploads Windows assets to the existing draft. Verify
+`latest.json` and all platform signatures again before publishing.
+
+
 ```
 
 ### Re-login after an authentication error
