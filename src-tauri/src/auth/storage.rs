@@ -451,8 +451,12 @@ fn replace_account_in_store(
     replacement.name = existing.name.clone(); // Preserve custom name on re-login.
     replacement.created_at = existing.created_at;
     replacement.last_used_at = existing.last_used_at;
-    // Re-login replaces credentials, but Codex may still hold an older copy.
-    replacement.last_refresh_at = Some(Utc::now());
+    // Only OAuth credential replacements get a new refresh generation.
+    // API-key accounts do not use token rotation.
+    replacement.last_refresh_at = match &replacement.auth_data {
+        AuthData::ChatGPT { .. } => Some(Utc::now()),
+        AuthData::ApiKey { .. } => None,
+    };
     store.accounts[existing_index] = replacement.clone();
     replacement
 }
@@ -856,6 +860,21 @@ mod tests {
         assert!(sync_active_account_tokens(&mut store, &live));
         assert_eq!(refresh_token(&store.accounts[0]), "refresh-new");
         assert_eq!(store.accounts[0].last_refresh_at, Some(newer));
+    }
+
+    #[test]
+    fn replacing_api_key_does_not_add_oauth_generation() {
+        let existing = StoredAccount::new_api_key("API".into(), "old-key".into());
+        let mut store = AccountsStore {
+            accounts: vec![existing],
+            ..AccountsStore::default()
+        };
+        let updated = replace_account_in_store(
+            &mut store,
+            0,
+            StoredAccount::new_api_key("API".into(), "new-key".into()),
+        );
+        assert!(updated.last_refresh_at.is_none());
     }
 
     #[test]
