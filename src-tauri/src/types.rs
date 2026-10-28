@@ -92,6 +92,10 @@ pub struct StoredAccount {
     pub created_at: DateTime<Utc>,
     /// Last time this account was used
     pub last_used_at: Option<DateTime<Utc>>,
+    /// Generation timestamp for the last persisted OAuth credentials.
+    /// Older stores do not have this field.
+    #[serde(default)]
+    pub last_refresh_at: Option<DateTime<Utc>>,
 }
 
 impl StoredAccount {
@@ -133,6 +137,7 @@ impl StoredAccount {
             auth_data: AuthData::ApiKey { key: api_key },
             created_at: Utc::now(),
             last_used_at: None,
+            last_refresh_at: None,
         }
     }
 
@@ -163,6 +168,7 @@ impl StoredAccount {
             },
             created_at: Utc::now(),
             last_used_at: None,
+            last_refresh_at: None,
         }
     }
 }

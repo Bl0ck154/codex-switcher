@@ -75,7 +75,7 @@ fn create_auth_json(account: &StoredAccount) -> Result<AuthDotJson> {
                 refresh_token: refresh_token.clone(),
                 account_id: account_id.clone(),
             }),
-            last_refresh: Some(Utc::now()),
+            last_refresh: account.last_refresh_at.or_else(|| Some(Utc::now())),
         }),
     }
 }
@@ -97,6 +97,7 @@ pub fn import_from_auth_json_contents(
     let auth: AuthDotJson =
         serde_json::from_str(&content).context("Failed to parse auth.json contents")?;
     let account_name = account_name.trim().to_string();
+    let last_refresh = auth.last_refresh;
 
     // Determine auth mode and create account
     if let Some(api_key) = auth.openai_api_key {
@@ -104,7 +105,7 @@ pub fn import_from_auth_json_contents(
     } else if let Some(tokens) = auth.tokens {
         let claims = parse_chatgpt_id_token_claims(&tokens.id_token);
 
-        Ok(StoredAccount::new_chatgpt(
+        let mut stored = StoredAccount::new_chatgpt(
             account_name,
             claims.email,
             claims.plan_type,
@@ -113,7 +114,9 @@ pub fn import_from_auth_json_contents(
             tokens.access_token,
             tokens.refresh_token,
             claims.account_id.or(tokens.account_id),
-        ))
+        );
+        stored.last_refresh_at = last_refresh;
+        Ok(stored)
     } else {
         anyhow::bail!("auth.json contains neither API key nor tokens");
     }
