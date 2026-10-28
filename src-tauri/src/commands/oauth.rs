@@ -194,6 +194,25 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
             if cancelled.load(Ordering::Relaxed) {
                 return Err("OAuth login cancelled".into());
             }
+            // Active re-login is also a credential switch for the managed
+            // CLI daemon; stop it before writing the renewed live auth.
+            if load_accounts()
+                .map_err(|e| e.to_string())?
+                .active_account_id
+                .as_deref()
+                == Some(id.as_str())
+            {
+                ensure_active_relogin_safe()?;
+                let stopped = tokio::task::spawn_blocking(
+                    super::cli_daemon::stop_cli_daemon_if_running,
+                )
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result);
+                if let Err(error) = stopped {
+                    eprintln!("[Auth] Failed to stop CLI daemon on re-login: {error:#}");
+                }
+            }
             let saved = save_relogin(&id, account)?;
             let store = load_accounts().map_err(|e| e.to_string())?;
             return Ok(AccountInfo::from_stored(
