@@ -76,7 +76,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        # GitHub macOS ARM64 hosted capacity has repeatedly failed to allocate
+        # a runner (no steps started; cancellation after ~15 minutes). Use the
+        # Intel macOS image for PR compile coverage until ARM64 is available.
+        # The release workflow still builds and requires real ARM64 artifacts.
+        os: [macos-15-intel, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
