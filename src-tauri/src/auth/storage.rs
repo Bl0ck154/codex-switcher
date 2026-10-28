@@ -51,10 +51,17 @@ pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson)
         return false;
     }
 
+    // The live file can be older than the last single-use refresh token
+    // persisted in accounts.json. Never move saved credentials backwards.
+    if runtime_snapshot_is_older(account.last_refresh_at, auth.last_refresh) {
+        return false;
+    }
+
     let changed = *id_token != tokens.id_token
         || *access_token != tokens.access_token
         || *refresh_token != tokens.refresh_token
-        || account_id.as_ref() != Some(&current_account_id);
+        || account_id.as_ref() != Some(&current_account_id)
+        || account.last_refresh_at != auth.last_refresh;
     if !changed {
         return false;
     }
@@ -63,7 +70,21 @@ pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson)
     access_token.clone_from(&tokens.access_token);
     refresh_token.clone_from(&tokens.refresh_token);
     *account_id = Some(current_account_id);
+    account.last_refresh_at = auth.last_refresh;
     true
+}
+
+fn runtime_snapshot_is_older(
+    stored_generation: Option<DateTime<Utc>>,
+    runtime_generation: Option<DateTime<Utc>>,
+) -> bool {
+    match (stored_generation, runtime_generation) {
+        (Some(stored), Some(runtime)) => runtime < stored,
+        // Old files may have no generation; allow initial migration, but
+        // never overwrite credentials with a known generation using them.
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
 }
 
 /// Get the path to the codex-switcher config directory
@@ -430,6 +451,8 @@ fn replace_account_in_store(
     replacement.name = existing.name.clone(); // Preserve custom name on re-login.
     replacement.created_at = existing.created_at;
     replacement.last_used_at = existing.last_used_at;
+    // Re-login replaces credentials, but Codex may still hold an older copy.
+    replacement.last_refresh_at = Some(Utc::now());
     store.accounts[existing_index] = replacement.clone();
     replacement
 }
@@ -626,6 +649,7 @@ pub fn update_account_chatgpt_tokens(
             account.subscription_expires_at = Some(subscription_expires_at);
         }
 
+        account.last_refresh_at = Some(Utc::now());
         Ok(account.clone())
     })
 }
@@ -790,6 +814,76 @@ mod tests {
             format!(r#"{{"https://api.openai.com/auth":{{"chatgpt_account_id":"{account_id}"}}}}"#);
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
         format!("header.{encoded}.{suffix}")
+    }
+
+    #[test]
+    fn stale_runtime_generation_does_not_undo_rotated_refresh_token() {
+        let mut saved = account("A", "workspace-a", "new");
+        let generation = Utc::now();
+        saved.last_refresh_at = Some(generation);
+        let mut store = AccountsStore {
+            active_account_id: Some(saved.id.clone()),
+            accounts: vec![saved],
+            ..AccountsStore::default()
+        };
+
+        let mut live = auth("workspace-a", "old");
+        live.last_refresh = Some(generation - Duration::minutes(5));
+        assert!(!sync_active_account_tokens(&mut store, &live));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-new");
+        assert_eq!(store.accounts[0].last_refresh_at, Some(generation));
+
+        // A legacy runtime snapshot without a generation is also stale.
+        live.last_refresh = None;
+        assert!(!sync_active_account_tokens(&mut store, &live));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-new");
+    }
+
+    #[test]
+    fn newer_runtime_generation_reconciles_rotated_credentials() {
+        let mut saved = account("A", "workspace-a", "old");
+        let generation = Utc::now();
+        saved.last_refresh_at = Some(generation);
+        let mut store = AccountsStore {
+            active_account_id: Some(saved.id.clone()),
+            accounts: vec![saved],
+            ..AccountsStore::default()
+        };
+
+        let mut live = auth("workspace-a", "new");
+        let newer = generation + Duration::seconds(20);
+        live.last_refresh = Some(newer);
+        assert!(sync_active_account_tokens(&mut store, &live));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-new");
+        assert_eq!(store.accounts[0].last_refresh_at, Some(newer));
+    }
+
+    #[test]
+    fn legacy_account_json_without_generation_remains_compatible() {
+        let saved = account("A", "workspace-a", "old");
+        let mut value = serde_json::to_value(&saved).unwrap();
+        value.as_object_mut().unwrap().remove("last_refresh_at");
+        let parsed: StoredAccount = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed.last_refresh_at, None);
+        assert_eq!(refresh_token(&parsed), "refresh-old");
+    }
+
+    #[test]
+    fn refreshed_login_is_newer_than_previous_live_snapshot() {
+        let mut existing = account("A", "workspace-a", "old");
+        existing.last_refresh_at = Some(Utc::now() - Duration::hours(2));
+        let mut store = AccountsStore {
+            active_account_id: Some(existing.id.clone()),
+            accounts: vec![existing],
+            ..AccountsStore::default()
+        };
+        let replacement = account("A", "workspace-a", "new");
+        let stored = replace_account_in_store(&mut store, 0, replacement);
+        assert!(stored.last_refresh_at.is_some());
+        let mut live = auth("workspace-a", "old");
+        live.last_refresh = Some(Utc::now() - Duration::minutes(30));
+        assert!(!sync_active_account_tokens(&mut store, &live));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-new");
     }
 
     #[test]
