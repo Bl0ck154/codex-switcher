@@ -10,8 +10,9 @@ use std::{
 use tokio::time::{sleep, Duration};
 
 use super::{
-    load_accounts, mutate_accounts, read_current_auth, same_saved_account, switch_to_account,
-    sync_active_account_tokens, update_account_chatgpt_tokens, AUTH_OPERATION_LOCK,
+    acquire_auth_operation_lock, load_accounts, mutate_accounts, read_current_auth,
+    same_saved_account, switch_to_account, sync_active_account_tokens,
+    update_account_chatgpt_tokens,
 };
 use crate::types::{
     parse_chatgpt_id_token_claims, AccountsStore, AuthData, AuthDotJson, StoredAccount,
@@ -91,12 +92,12 @@ pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<Stor
         return Ok(account.clone());
     }
 
-    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    let _auth_guard = acquire_auth_operation_lock().await?;
     ensure_chatgpt_tokens_fresh_with_policy_locked(account, false).await
 }
 
 /// Ensure the full ChatGPT OAuth token set is fresh while the caller holds
-/// AUTH_OPERATION_LOCK. Account switching still needs a fresh ID token because
+/// the auth-operation lock. Account switching still needs a fresh ID token because
 /// Codex can reject auth.json when its ID token is expired.
 pub(crate) async fn ensure_chatgpt_tokens_fresh_locked(
     account: &StoredAccount,
@@ -174,7 +175,7 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
         return Ok(account.clone());
     }
 
-    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    let _auth_guard = acquire_auth_operation_lock().await?;
     refresh_chatgpt_tokens_locked(account).await
 }
 

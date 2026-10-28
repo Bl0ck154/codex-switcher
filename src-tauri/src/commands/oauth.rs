@@ -6,8 +6,8 @@ use tokio::sync::oneshot;
 
 use crate::auth::oauth_server::{start_oauth_login, wait_for_oauth_login, OAuthLoginResult};
 use crate::auth::{
-    add_or_replace_account, duplicate_account_requires_confirmation, load_accounts,
-    ACCOUNT_REPLACE_CONFIRMATION_PREFIX, AUTH_OPERATION_LOCK,
+    acquire_auth_operation_lock, add_or_replace_account, duplicate_account_requires_confirmation,
+    load_accounts, ACCOUNT_REPLACE_CONFIRMATION_PREFIX,
 };
 use crate::types::{AccountInfo, OAuthLoginInfo, StoredAccount};
 
@@ -90,7 +90,9 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
         ));
     }
 
-    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    let _auth_guard = acquire_auth_operation_lock()
+        .await
+        .map_err(|e| e.to_string())?;
     let stored = add_or_replace_account(account, true).map_err(|e| e.to_string())?;
 
     // Account addition never silently replaces the live Codex auth.json.

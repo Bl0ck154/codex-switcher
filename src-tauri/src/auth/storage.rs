@@ -139,7 +139,7 @@ pub(crate) fn acquire_mutation_lock(lock_name: &str) -> Result<MutationLock> {
     acquire_mutation_lock_at(&config_dir.join(lock_name))
 }
 
-fn acquire_mutation_lock_at(path: &Path) -> Result<MutationLock> {
+pub(crate) fn acquire_mutation_lock_at(path: &Path) -> Result<MutationLock> {
     #[cfg(unix)]
     {
         use std::os::fd::AsRawFd;
