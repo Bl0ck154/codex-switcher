@@ -5,12 +5,14 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 use crate::auth::oauth_server::{start_oauth_login, wait_for_oauth_login, OAuthLoginResult};
+use crate::auth::switch_to_account;
 use crate::auth::{
     acquire_auth_operation_lock, add_or_replace_account, duplicate_account_requires_confirmation,
     load_accounts, mutate_accounts, ACCOUNT_REPLACE_CONFIRMATION_PREFIX,
 };
-use crate::auth::switch_to_account;
-use crate::types::{parse_chatgpt_id_token_claims, AccountInfo, AuthData, OAuthLoginInfo, StoredAccount};
+use crate::types::{
+    parse_chatgpt_id_token_claims, AccountInfo, AuthData, OAuthLoginInfo, StoredAccount,
+};
 use chrono::Utc;
 
 struct PendingOAuth {
@@ -155,10 +157,15 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
     if force_replace {
         let staged = PENDING_COMPLETED_ACCOUNT.lock().unwrap().take();
         if let Some(account) = staged {
-            let _guard = acquire_auth_operation_lock().await.map_err(|e| e.to_string())?;
+            let _guard = acquire_auth_operation_lock()
+                .await
+                .map_err(|e| e.to_string())?;
             let saved = add_or_replace_account(account, true).map_err(|e| e.to_string())?;
             let store = load_accounts().map_err(|e| e.to_string())?;
-            return Ok(AccountInfo::from_stored(&saved, store.active_account_id.as_deref()));
+            return Ok(AccountInfo::from_stored(
+                &saved,
+                store.active_account_id.as_deref(),
+            ));
         }
     }
 
@@ -166,7 +173,10 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
         let mut pending = PENDING_OAUTH.lock().unwrap();
         let pending = pending.as_mut().ok_or("No pending OAuth login")?;
         (
-            pending.rx.take().ok_or("OAuth login is already being completed")?,
+            pending
+                .rx
+                .take()
+                .ok_or("OAuth login is already being completed")?,
             pending.cancelled.clone(),
             pending.reauth_account_id.clone(),
         )
@@ -178,13 +188,18 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
             return Err("OAuth login cancelled".into());
         }
         if let Some(id) = target {
-            let _guard = acquire_auth_operation_lock().await.map_err(|e| e.to_string())?;
+            let _guard = acquire_auth_operation_lock()
+                .await
+                .map_err(|e| e.to_string())?;
             if cancelled.load(Ordering::Relaxed) {
                 return Err("OAuth login cancelled".into());
             }
             let saved = save_relogin(&id, account)?;
             let store = load_accounts().map_err(|e| e.to_string())?;
-            return Ok(AccountInfo::from_stored(&saved, store.active_account_id.as_deref()));
+            return Ok(AccountInfo::from_stored(
+                &saved,
+                store.active_account_id.as_deref(),
+            ));
         }
 
         // Checking whether an existing session is healthy can refresh tokens,
@@ -201,13 +216,18 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
             PENDING_COMPLETED_ACCOUNT.lock().unwrap().replace(account);
             return Err(format!("{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{name}"));
         }
-        let _guard = acquire_auth_operation_lock().await.map_err(|e| e.to_string())?;
+        let _guard = acquire_auth_operation_lock()
+            .await
+            .map_err(|e| e.to_string())?;
         if cancelled.load(Ordering::Relaxed) {
             return Err("OAuth login cancelled".into());
         }
         let saved = add_or_replace_account(account, true).map_err(|e| e.to_string())?;
         let store = load_accounts().map_err(|e| e.to_string())?;
-        Ok(AccountInfo::from_stored(&saved, store.active_account_id.as_deref()))
+        Ok(AccountInfo::from_stored(
+            &saved,
+            store.active_account_id.as_deref(),
+        ))
     }
     .await;
 

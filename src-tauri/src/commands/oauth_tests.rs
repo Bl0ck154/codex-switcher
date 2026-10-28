@@ -208,7 +208,10 @@ async fn cancelling_staged_duplicate_does_not_replace_credentials() {
         ..AccountsStore::default()
     })
     .unwrap();
-    PENDING_COMPLETED_ACCOUNT.lock().unwrap().replace(account("same"));
+    PENDING_COMPLETED_ACCOUNT
+        .lock()
+        .unwrap()
+        .replace(account("same"));
     cancel_login().await.unwrap();
     assert!(complete_login(Some(true)).await.is_err());
     let store = load_accounts().unwrap();
