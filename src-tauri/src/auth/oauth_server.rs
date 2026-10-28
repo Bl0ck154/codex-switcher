@@ -17,6 +17,7 @@ use crate::types::{parse_chatgpt_id_token_claims, OAuthLoginInfo, StoredAccount}
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_PORT: u16 = 1455; // Same as official Codex
+const FALLBACK_PORT: u16 = 1457; // Registered fallback from the official Codex CLI
 
 /// PKCE codes for OAuth
 #[derive(Debug, Clone)]
@@ -59,7 +60,10 @@ fn build_authorize_url(
         ("response_type", "code"),
         ("client_id", client_id),
         ("redirect_uri", redirect_uri),
-        ("scope", "openid profile email offline_access"),
+        (
+            "scope",
+            "openid profile email offline_access api.connectors.read api.connectors.invoke",
+        ),
         ("code_challenge", &pkce.code_challenge),
         ("code_challenge_method", "S256"),
         ("id_token_add_organizations", "true"),
@@ -143,16 +147,16 @@ pub async fn start_oauth_login(
     println!("[OAuth] Starting login for account: {account_name}");
     println!("[OAuth] PKCE challenge: {}", &pkce.code_challenge[..20]);
 
-    // Try official default port first; fall back to a random free port if it is busy.
+    // Both callback ports must match registered OAuth redirect URIs.
     let server = match Server::http(format!("127.0.0.1:{DEFAULT_PORT}")) {
         Ok(server) => server,
         Err(default_err) => {
             println!(
-                "[OAuth] Default callback port {DEFAULT_PORT} unavailable ({default_err}), using a random local port"
+                "[OAuth] Default callback port {DEFAULT_PORT} unavailable ({default_err}), trying registered fallback {FALLBACK_PORT}"
             );
-            Server::http("127.0.0.1:0").map_err(|fallback_err| {
+            Server::http(format!("127.0.0.1:{FALLBACK_PORT}")).map_err(|fallback_err| {
                 anyhow::anyhow!(
-                    "Failed to start OAuth server: default port {DEFAULT_PORT} error: {default_err}; fallback error: {fallback_err}"
+                    "Failed to start OAuth server: port {DEFAULT_PORT}: {default_err}; fallback port {FALLBACK_PORT}: {fallback_err}"
                 )
             })?
         }
@@ -163,7 +167,7 @@ pub async fn start_oauth_login(
         None => anyhow::bail!("Failed to determine server port"),
     };
 
-    let redirect_uri = format!("http://localhost:{actual_port}/auth/callback");
+    let redirect_uri = format!("http://127.0.0.1:{actual_port}/auth/callback");
     let auth_url = build_authorize_url(DEFAULT_ISSUER, CLIENT_ID, &redirect_uri, &pkce, &state);
 
     println!("[OAuth] Server started on port {actual_port}");
@@ -394,4 +398,49 @@ pub async fn wait_for_oauth_login(
 ) -> Result<StoredAccount> {
     let result = rx.await.context("OAuth login was cancelled")??;
     Ok(result.account)
+}
+
+#[cfg(test)]
+mod oauth_authorize_tests {
+    use super::{
+        build_authorize_url, PkceCodes, CLIENT_ID, DEFAULT_ISSUER, DEFAULT_PORT, FALLBACK_PORT,
+    };
+
+    #[test]
+    fn authorize_request_uses_registered_codex_redirects_and_current_scopes() {
+        assert_eq!(DEFAULT_PORT, 1455);
+        assert_eq!(FALLBACK_PORT, 1457);
+        let pkce = PkceCodes {
+            code_verifier: "test-verifier".into(),
+            code_challenge: "test-challenge".into(),
+        };
+
+        for port in [DEFAULT_PORT, FALLBACK_PORT] {
+            let redirect = format!("http://127.0.0.1:{port}/auth/callback");
+            let url = url::Url::parse(&build_authorize_url(
+                DEFAULT_ISSUER,
+                CLIENT_ID,
+                &redirect,
+                &pkce,
+                "test-state",
+            ))
+            .expect("valid authorization URL");
+            let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+
+            assert_eq!(url.host_str(), Some("auth.openai.com"));
+            assert_eq!(url.path(), "/oauth/authorize");
+            assert_eq!(params.get("redirect_uri"), Some(&redirect));
+            assert_eq!(
+                params.get("scope").map(String::as_str),
+                Some(
+                    "openid profile email offline_access api.connectors.read api.connectors.invoke"
+                )
+            );
+            assert_eq!(
+                params.get("code_challenge_method").map(String::as_str),
+                Some("S256")
+            );
+            assert_eq!(params.get("state").map(String::as_str), Some("test-state"));
+        }
+    }
 }
