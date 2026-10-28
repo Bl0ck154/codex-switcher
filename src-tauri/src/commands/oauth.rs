@@ -203,12 +203,11 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
                 == Some(id.as_str())
             {
                 ensure_active_relogin_safe()?;
-                let stopped = tokio::task::spawn_blocking(
-                    super::cli_daemon::stop_cli_daemon_if_running,
-                )
-                .await
-                .map_err(anyhow::Error::from)
-                .and_then(|result| result);
+                let stopped =
+                    tokio::task::spawn_blocking(super::cli_daemon::stop_cli_daemon_if_running)
+                        .await
+                        .map_err(anyhow::Error::from)
+                        .and_then(|result| result);
                 if let Err(error) = stopped {
                     eprintln!("[Auth] Failed to stop CLI daemon on re-login: {error:#}");
                 }
