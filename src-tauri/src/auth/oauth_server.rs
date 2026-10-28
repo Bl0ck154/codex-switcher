@@ -402,7 +402,9 @@ pub async fn wait_for_oauth_login(
 
 #[cfg(test)]
 mod oauth_authorize_tests {
-    use super::{build_authorize_url, PkceCodes, CLIENT_ID, DEFAULT_ISSUER, DEFAULT_PORT, FALLBACK_PORT};
+    use super::{
+        build_authorize_url, PkceCodes, CLIENT_ID, DEFAULT_ISSUER, DEFAULT_PORT, FALLBACK_PORT,
+    };
 
     #[test]
     fn authorize_request_uses_registered_codex_redirects_and_current_scopes() {
@@ -423,17 +425,21 @@ mod oauth_authorize_tests {
                 "test-state",
             ))
             .expect("valid authorization URL");
-            let params: std::collections::HashMap<_, _> =
-                url.query_pairs().into_owned().collect();
+            let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
 
             assert_eq!(url.host_str(), Some("auth.openai.com"));
             assert_eq!(url.path(), "/oauth/authorize");
             assert_eq!(params.get("redirect_uri"), Some(&redirect));
             assert_eq!(
                 params.get("scope").map(String::as_str),
-                Some("openid profile email offline_access api.connectors.read api.connectors.invoke")
+                Some(
+                    "openid profile email offline_access api.connectors.read api.connectors.invoke"
+                )
             );
-            assert_eq!(params.get("code_challenge_method").map(String::as_str), Some("S256"));
+            assert_eq!(
+                params.get("code_challenge_method").map(String::as_str),
+                Some("S256")
+            );
             assert_eq!(params.get("state").map(String::as_str), Some("test-state"));
         }
     }
