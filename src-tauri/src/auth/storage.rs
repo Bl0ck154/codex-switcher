@@ -288,23 +288,37 @@ fn replace_file(from: &Path, to: &Path) -> Result<()> {
 
     let from_wide: Vec<u16> = from.as_os_str().encode_wide().chain(Some(0)).collect();
     let to_wide: Vec<u16> = to.as_os_str().encode_wide().chain(Some(0)).collect();
-    let result = unsafe {
-        MoveFileExW(
-            from_wide.as_ptr(),
-            to_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        return Err(std::io::Error::last_os_error()).with_context(|| {
-            format!(
-                "Failed to atomically replace {} with {}",
-                to.display(),
-                from.display()
+    // Antivirus and background readers can temporarily deny replacing a file
+    // on Windows. Preserve the atomic move and retry only common sharing/lock
+    // errors (plus access denied, often returned by file scanners).
+    const RETRY_DELAYS_MS: [u64; 4] = [25, 50, 100, 200];
+    for attempt in 0..=RETRY_DELAYS_MS.len() {
+        let result = unsafe {
+            MoveFileExW(
+                from_wide.as_ptr(),
+                to_wide.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
             )
-        });
+        };
+        if result != 0 {
+            return Ok(());
+        }
+
+        let error = std::io::Error::last_os_error();
+        let can_retry = matches!(error.raw_os_error(), Some(5 | 32 | 33));
+        if !can_retry || attempt == RETRY_DELAYS_MS.len() {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to atomically replace {} with {} after {} attempt(s)",
+                    to.display(),
+                    from.display(),
+                    attempt + 1
+                )
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAYS_MS[attempt]));
     }
-    Ok(())
+    unreachable!("replace either succeeds or returns its last error")
 }
 
 /// Load the accounts store from disk
