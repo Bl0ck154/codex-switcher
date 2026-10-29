@@ -544,7 +544,7 @@ fn refresh_tray_display<R: Runtime>(
                     eprintln!("Failed to refresh tray icon template mode: {error}");
                 }
             }
-'            // On Windows the icon is set at startup and on system theme
+            // On Windows the icon is set at startup and on system theme
             // changes; do not reset it for each usage refresh while a context
             // menu might be open.
             if let Err(error) = tray.set_title(title) {
@@ -559,7 +559,7 @@ fn refresh_tray_display<R: Runtime>(
             if let Err(error) = tray.set_icon(None) {
                 eprintln!("Failed to hide tray icon: {error}");
             }
-'            // On Windows the icon is set at startup and on system theme
+            // On Windows the icon is set at startup and on system theme
             // changes; do not reset it for each usage refresh while a context
             // menu might be open.
             if let Err(error) = tray.set_title(title) {
