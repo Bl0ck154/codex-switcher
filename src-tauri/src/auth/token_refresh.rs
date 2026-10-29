@@ -122,7 +122,8 @@ Proceeding with the existing unexpired access token.",
                 // Do not hide the failure category behind an identical toast
                 // for a revoked token, network outage, and a failed file write.
                 // Avoid returning the raw provider response to the UI.
-                Err(refresh_error.context(switch_refresh_failure_message(&refresh_error)))
+                let user_message = switch_refresh_failure_message(&refresh_error);
+                Err(refresh_error.context(user_message))
             }
         }
     }
