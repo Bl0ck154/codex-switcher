@@ -734,13 +734,11 @@ mod tests {
 
     #[test]
     fn switch_auth_error_reports_safe_recovery_without_leaking_provider_response() {
-        let revoked = anyhow::anyhow!(
-            "Codex Switcher's saved session is out of date. opaque-secret-value"
-        );
+        let revoked =
+            anyhow::anyhow!("Codex Switcher's saved session is out of date. opaque-secret-value");
         assert!(super::switch_refresh_failure_message(&revoked)
             .starts_with("ACCOUNT_RELOGIN_REQUIRED:"));
-        assert!(!super::switch_refresh_failure_message(&revoked)
-            .contains("opaque-secret-value"));
+        assert!(!super::switch_refresh_failure_message(&revoked).contains("opaque-secret-value"));
         assert!(super::switch_refresh_failure_message(&anyhow::anyhow!(
             "Failed to send token refresh request: connection timeout"
         ))
