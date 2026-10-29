@@ -235,7 +235,10 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
                     return Err("OAuth login cancelled".into());
                 }
                 PENDING_COMPLETED_ACCOUNT.lock().unwrap().replace(account);
-                return Err(format!("{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}", existing.name));
+                return Err(format!(
+                    "{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}",
+                    existing.name
+                ));
             }
         }
 
@@ -245,7 +248,11 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
         // A forced replacement can affect the active account and still needs
         // the auth-operation lock.
         let _guard = if force_replace {
-            Some(acquire_auth_operation_lock().await.map_err(|e| e.to_string())?)
+            Some(
+                acquire_auth_operation_lock()
+                    .await
+                    .map_err(|e| e.to_string())?,
+            )
         } else {
             None
         };
@@ -256,7 +263,9 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
             Ok(saved) => saved,
             Err(error)
                 if !force_replace
-                    && error.to_string().starts_with(ACCOUNT_REPLACE_CONFIRMATION_PREFIX) =>
+                    && error
+                        .to_string()
+                        .starts_with(ACCOUNT_REPLACE_CONFIRMATION_PREFIX) =>
             {
                 // A duplicate may have been added concurrently after our
                 // initial lookup. Stage the fresh credentials for confirmation.
