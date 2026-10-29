@@ -4,8 +4,9 @@ use crate::auth::{
     acquire_auth_operation_lock, add_or_replace_account, create_chatgpt_account_from_refresh_token,
     duplicate_account_requires_confirmation, ensure_chatgpt_tokens_fresh_locked,
     get_active_account, import_from_auth_json, import_from_auth_json_contents, load_accounts,
-    mutate_accounts, read_current_auth, remove_account, set_active_account, switch_to_account,
-    sync_active_account_tokens, touch_account, ACCOUNT_REPLACE_CONFIRMATION_PREFIX,
+    mutate_accounts, read_current_auth, refresh_chatgpt_tokens_locked, remove_account,
+    set_active_account, switch_to_account, sync_active_account_tokens, touch_account,
+    ACCOUNT_REPLACE_CONFIRMATION_PREFIX,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
@@ -235,9 +236,16 @@ async fn switch_account_checked(
         .position(|account| account.id == account_id)
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
-    let account = ensure_chatgpt_tokens_fresh_locked(&store.accounts[target_index])
-        .await
-        .map_err(|e| e.to_string())?;
+    // Selecting the already-active ChatGPT account is an explicit recovery
+    // attempt, not just another file write. A token can be revoked long
+    // before its JWT expiry. Obtain a fresh set before claiming recovery.
+    let selected = &store.accounts[target_index];
+    let result = if already_active && matches!(selected.auth_data, AuthData::ChatGPT { .. }) {
+        refresh_chatgpt_tokens_locked(selected).await
+    } else {
+        ensure_chatgpt_tokens_fresh_locked(selected).await
+    };
+    let account = result.map_err(|e| e.to_string())?;
 
     // Write to ~/.codex/auth.json
     switch_to_account(&account).map_err(|e| e.to_string())?;
