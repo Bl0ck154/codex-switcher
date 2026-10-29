@@ -199,9 +199,11 @@ async fn switch_account_checked(
         .position(|account| account.id == account_id)
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
-    if store.active_account_id.as_deref() == Some(account_id) {
-        return Ok(());
-    }
+    // A previously active account is not proof that Codex is still logged in.
+    // auth.json may be missing, overwritten by Codex or another process, or
+    // contain older credentials. Explicit Switch must repair the live file
+    // instead of returning a false success.
+    let already_active = store.active_account_id.as_deref() == Some(account_id);
 
     ensure_codex_not_running()?;
 
@@ -240,8 +242,11 @@ async fn switch_account_checked(
     // Write to ~/.codex/auth.json
     switch_to_account(&account).map_err(|e| e.to_string())?;
 
-    // Update the active account in our store
-    set_active_account(account_id).map_err(|e| e.to_string())?;
+    // A repeated switch can repair missing/old active Codex credentials.
+    // Keep the selected account id unchanged in that case.
+    if !already_active {
+        set_active_account(account_id).map_err(|e| e.to_string())?;
+    }
 
     // Update last_used_at
     touch_account(account_id).map_err(|e| e.to_string())?;
@@ -851,6 +856,48 @@ pub async fn set_masked_account_ids(ids: Vec<String>) -> Result<(), String> {
 mod automatic_switch_tests {
     use super::*;
     use crate::auth::save_accounts;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn switching_same_active_account_repairs_missing_codex_auth_file() {
+        use crate::auth::{
+            get_codex_auth_file, load_accounts, read_current_auth, save_accounts,
+        };
+        use crate::types::StoredAccount;
+        use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+        let _home = crate::auth::test_support::TestHome::new();
+        let expires = chrono::Utc::now().timestamp() + 24 * 60 * 60;
+        let jwt = format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{expires}}}"#))
+        );
+        let account = StoredAccount::new_chatgpt(
+            "test".into(),
+            None,
+            None,
+            None,
+            jwt.clone(),
+            jwt,
+            "refresh".into(),
+            Some("workspace".into()),
+        );
+        save_accounts(&AccountsStore {
+            active_account_id: Some(account.id.clone()),
+            accounts: vec![account.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!get_codex_auth_file().unwrap().exists());
+
+        switch_account_by_id(&account.id).await.unwrap();
+
+        let live = read_current_auth().unwrap().unwrap();
+        assert_eq!(live.tokens.unwrap().account_id.as_deref(), Some("workspace"));
+        assert_eq!(
+            load_accounts().unwrap().active_account_id.as_deref(),
+            Some(account.id.as_str())
+        );
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn automatic_switch_rechecks_source_after_waiting_for_auth_lock() {
