@@ -7,6 +7,7 @@ import type {
   ImportAccountsSummary,
 } from "../types";
 import { invokeBackend, isTauriRuntime, type FileSource } from "../lib/platform";
+import { completeOAuthWithoutBlockingOnUsage } from "../lib/oauthCompletion";
 
 export function useAccounts() {
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
@@ -357,16 +358,13 @@ export function useAccounts() {
     }
   }, []);
 
-  const completeOAuthLogin = useCallback(async (forceReplace = false) => {
-    try {
-      const account = await invokeBackend<AccountInfo>("complete_login", { forceReplace });
-      const accountList = await loadAccounts();
-      await refreshUsage(accountList);
-      return account;
-    } catch (err) {
-      throw err;
-    }
-  }, [loadAccounts, refreshUsage]);
+  const completeOAuthLogin = useCallback((forceReplace = false) =>
+    completeOAuthWithoutBlockingOnUsage(
+      () => invokeBackend<AccountInfo>("complete_login", { forceReplace }),
+      () => loadAccounts(true),
+      (account) => refreshUsage([account]),
+      (err) => console.warn("Failed to refresh usage after OAuth login:", err),
+    ), [loadAccounts, refreshUsage]);
 
   const exportAccountsSlimText = useCallback(async () => {
     try {
