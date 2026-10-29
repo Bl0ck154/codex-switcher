@@ -7,7 +7,7 @@ use std::{
     collections::HashSet,
     sync::{Mutex, OnceLock},
 };
-use tokio::time::{sleep, Duration};
+use tokio::time::Duration;
 
 use super::{
     acquire_auth_operation_lock, load_accounts, mutate_accounts, read_current_auth,
@@ -540,6 +540,26 @@ fn format_token_refresh_error(status: reqwest::StatusCode, body: &str) -> String
 }
 
 async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<RefreshTokenResponse> {
+    refresh_tokens_with_refresh_token_at(
+        refresh_token,
+        &format!("{DEFAULT_ISSUER}/oauth/token"),
+        Duration::from_secs(10),
+    )
+    .await
+}
+
+/// Refresh tokens may be rotated/revoked as soon as the server processes a
+/// request. A timeout or connection drop is an *unknown* outcome: the server
+/// may have returned a new token that we never received. Retrying the same
+/// single-use credential can turn an otherwise healthy session into 401.
+///
+/// Never retry this POST automatically. Let the user re-authenticate if the
+/// token was already consumed and its replacement cannot be recovered.
+async fn refresh_tokens_with_refresh_token_at(
+    refresh_token: &str,
+    endpoint: &str,
+    timeout: Duration,
+) -> Result<RefreshTokenResponse> {
     let client = reqwest::Client::new();
     let body = format!(
         "grant_type=refresh_token&refresh_token={}&client_id={}",
@@ -547,43 +567,20 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
         urlencoding::encode(CLIENT_ID),
     );
 
-    let mut last_send_error = None;
-    let mut response = None;
-
-    for attempt in 1..=3u8 {
-        match client
-            .post(format!("{DEFAULT_ISSUER}/oauth/token"))
-            .timeout(Duration::from_secs(10))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(body.clone())
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                response = Some(resp);
-                break;
-            }
-            Err(err) => {
-                last_send_error = Some(err);
-                if attempt < 3 {
-                    sleep(Duration::from_millis(250 * u64::from(attempt))).await;
-                }
-            }
-        }
-    }
-
-    let response = match response {
-        Some(resp) => resp,
-        None => {
-            let err = last_send_error.context("Failed to send token refresh request")?;
-            return Err(err.into());
-        }
-    };
+    let response = client
+        .post(endpoint)
+        .timeout(timeout)
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .context("Failed to send token refresh request; outcome unknown, not retrying single-use token")?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        eprintln!("[Auth] Token refresh failed: {status} - {body}");
+        // The identity provider may echo sensitive credential material.
+        eprintln!("[Auth] Token refresh failed: {status}");
         anyhow::bail!("{}", format_token_refresh_error(status, &body));
     }
 
@@ -701,6 +698,36 @@ mod tests {
         );
 
         assert!(can_switch_with_existing_access_token(&account));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ambiguous_transport_failure_never_retries_single_use_refresh_token() {
+        use tokio::net::TcpListener;
+        use tokio::time::{timeout, Duration};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/oauth/token", listener.local_addr().unwrap());
+        let requests = tokio::spawn(async move {
+            let mut count = 0;
+            while let Ok(Ok((connection, _))) =
+                timeout(Duration::from_millis(400), listener.accept()).await
+            {
+                count += 1;
+                // Drop the TCP connection after receiving it, making the POST
+                // outcome ambiguous without ever receiving a token response.
+                drop(connection);
+            }
+            count
+        });
+
+        assert!(super::refresh_tokens_with_refresh_token_at(
+            "dummy-refresh-token",
+            &endpoint,
+            Duration::from_millis(200),
+        )
+        .await
+        .is_err());
+        assert_eq!(requests.await.unwrap(), 1);
     }
 
     #[test]
