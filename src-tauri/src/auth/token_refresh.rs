@@ -119,9 +119,10 @@ Proceeding with the existing unexpired access token.",
                 );
                 Ok(fallback)
             } else {
-                Err(refresh_error.context(
-                    "Codex credentials could not be renewed. Re-login to this account before switching."
-                ))
+                // Do not hide the failure category behind an identical toast
+                // for a revoked token, network outage, and a failed file write.
+                // Avoid returning the raw provider response to the UI.
+                Err(refresh_error.context(switch_refresh_failure_message(&refresh_error)))
             }
         }
     }
@@ -398,6 +399,34 @@ pub async fn duplicate_account_requires_confirmation(candidate: &StoredAccount) 
 
 fn can_switch_with_existing_access_token(account: &StoredAccount) -> bool {
     !chatgpt_access_token_needs_refresh(account)
+}
+
+/// Safe, actionable front-end status. Never echo a token endpoint response:
+/// identity-provider messages could contain credential material.
+fn switch_refresh_failure_message(error: &anyhow::Error) -> &'static str {
+    let message = format!("{error:#}").to_lowercase();
+    if refresh_error_invalidates_saved_session(error)
+        || message.contains("missing refresh token")
+        || message.contains("did not return a fresh id_token")
+        || message.contains("invalid or expired id_token")
+    {
+        return "ACCOUNT_RELOGIN_REQUIRED: The saved ChatGPT session cannot be renewed. Re-login to restore this account.";
+    }
+
+    if message.contains("auth.json") || message.contains("failed to write") {
+        return "ACCOUNT_SYNC_FAILED: Credentials were updated but could not be written to Codex. Close Codex and retry.";
+    }
+
+    if message.contains("failed to send token refresh request")
+        || message.contains("could not refresh the saved codex switcher session (429)")
+        || ["500", "502", "503", "504"]
+            .iter()
+            .any(|status| message.contains(&format!("session ({status})")))
+    {
+        return "ACCOUNT_REFRESH_RETRYABLE: Authentication service is unavailable. Try Switch again.";
+    }
+
+    "ACCOUNT_REFRESH_FAILED: Could not renew the saved ChatGPT session. Retry or re-login if the problem persists."
 }
 
 fn can_fallback_after_refresh_failure(error: &anyhow::Error, account: &StoredAccount) -> bool {
@@ -701,6 +730,29 @@ mod tests {
         );
 
         assert!(can_switch_with_existing_access_token(&account));
+    }
+
+    #[test]
+    fn switch_auth_error_reports_safe_recovery_without_leaking_provider_response() {
+        let revoked = anyhow::anyhow!(
+            "Codex Switcher's saved session is out of date. opaque-secret-value"
+        );
+        assert!(super::switch_refresh_failure_message(&revoked)
+            .starts_with("ACCOUNT_RELOGIN_REQUIRED:"));
+        assert!(!super::switch_refresh_failure_message(&revoked)
+            .contains("opaque-secret-value"));
+        assert!(super::switch_refresh_failure_message(&anyhow::anyhow!(
+            "Failed to send token refresh request: connection timeout"
+        ))
+        .starts_with("ACCOUNT_REFRESH_RETRYABLE:"));
+        assert!(super::switch_refresh_failure_message(&anyhow::anyhow!(
+            "OAuth tokens were saved, but Codex auth.json could not be updated"
+        ))
+        .starts_with("ACCOUNT_SYNC_FAILED:"));
+        assert!(super::switch_refresh_failure_message(&anyhow::anyhow!(
+            "Token refresh did not return a fresh id_token"
+        ))
+        .starts_with("ACCOUNT_RELOGIN_REQUIRED:"));
     }
 
     #[test]
