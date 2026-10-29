@@ -111,15 +111,17 @@ pub(crate) async fn ensure_chatgpt_tokens_fresh_locked(
             // if that cannot be done, fall back to the latest stored/live account
             // as long as its access token is still usable.
             let (fallback, _) = load_account_reconciling_live_auth(&account.id)?;
-            if can_switch_with_existing_access_token(&fallback) {
+            if can_fallback_after_refresh_failure(&refresh_error, &fallback) {
                 eprintln!(
                     "[Auth] Full OAuth refresh failed before switch for account {}: {refresh_error:#}. \
-Proceeding with the existing usable access token.",
+Proceeding with the existing unexpired access token.",
                     fallback.name
                 );
                 Ok(fallback)
             } else {
-                Err(refresh_error)
+                Err(refresh_error.context(
+                    "Codex credentials could not be renewed. Re-login to this account before switching."
+                ))
             }
         }
     }
@@ -243,9 +245,13 @@ async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<Stored
     // Re-read active state after the network request before touching auth.json.
     let is_active = load_accounts()?.active_account_id.as_deref() == Some(account.id.as_str());
     if is_active {
-        if let Err(err) = switch_to_account(&updated) {
-            println!("[Auth] Failed to sync active auth.json after token refresh: {err}");
-        }
+        // Do not claim a successful token refresh when Codex will still load
+        // the previous (possibly revoked) token from its live auth.json.
+        // The rotated credentials remain safely stored in accounts.json so
+        // an explicit switch can retry the live write.
+        switch_to_account(&updated).context(
+            "OAuth tokens were saved, but Codex auth.json could not be updated. Close Codex and switch to the account again."
+        )?;
     }
 
     Ok(updated)
@@ -392,6 +398,21 @@ pub async fn duplicate_account_requires_confirmation(candidate: &StoredAccount) 
 
 fn can_switch_with_existing_access_token(account: &StoredAccount) -> bool {
     !chatgpt_access_token_needs_refresh(account)
+}
+
+fn can_fallback_after_refresh_failure(error: &anyhow::Error, account: &StoredAccount) -> bool {
+    // An unexpired JWT is not proof of a valid Codex session. Only transient
+    // network/provider failures may use the previous access token. A terminal
+    // rejection, failed live auth.json write, failed credential persistence or
+    // incomplete token response must never turn into a successful switch.
+    let message = format!("{error:#}").to_lowercase();
+    let transient = message.contains("failed to send token refresh request")
+        || ["429", "500", "502", "503", "504"]
+            .iter()
+            .any(|status| message.contains(&format!("token refresh failed: {status}")));
+    transient
+        && !refresh_error_invalidates_saved_session(error)
+        && can_switch_with_existing_access_token(account)
 }
 
 /// JWT access tokens refresh five minutes before expiry. For tokens that
@@ -680,6 +701,40 @@ mod tests {
         );
 
         assert!(can_switch_with_existing_access_token(&account));
+    }
+
+    #[test]
+    fn revoked_refresh_token_must_not_be_used_as_successful_switch_fallback() {
+        let now = chrono::Utc::now().timestamp();
+        let account = StoredAccount::new_chatgpt(
+            "Revoked".into(),
+            None,
+            None,
+            None,
+            jwt_with_exp(now - 3_600),
+            jwt_with_exp(now + 3_600),
+            "revoked-refresh".into(),
+            None,
+        );
+        let revoked = anyhow::anyhow!("401 Unauthorized: refresh_token_invalidated");
+        let temporary = anyhow::anyhow!("Failed to send token refresh request: timed out");
+        let failed_live_write =
+            anyhow::anyhow!("OAuth tokens were saved, but Codex auth.json could not be updated.");
+        let invalid_response = anyhow::anyhow!("Failed to parse token refresh response");
+        assert!(!super::can_fallback_after_refresh_failure(
+            &revoked, &account
+        ));
+        assert!(super::can_fallback_after_refresh_failure(
+            &temporary, &account
+        ));
+        assert!(!super::can_fallback_after_refresh_failure(
+            &failed_live_write,
+            &account
+        ));
+        assert!(!super::can_fallback_after_refresh_failure(
+            &invalid_response,
+            &account
+        ));
     }
 
     #[test]
