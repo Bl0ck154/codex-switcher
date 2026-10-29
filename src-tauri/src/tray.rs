@@ -26,8 +26,7 @@ static TRAY_USAGE: LazyLock<Mutex<HashMap<String, UsageInfo>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static TRAY_SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static TRAY_SWITCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-static TRAY_RIGHT_CLICK_AT: LazyLock<Mutex<Option<Instant>>> =
-    LazyLock::new(|| Mutex::new(None));
+static TRAY_RIGHT_CLICK_AT: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
 static LAST_TRAY_MENU: LazyLock<Mutex<Option<TrayMenuSignature>>> =
     LazyLock::new(|| Mutex::new(None));
 
@@ -45,20 +44,26 @@ struct TrayMenuSignature {
 
 fn menu_signature(store: &AccountsStore) -> TrayMenuSignature {
     TrayMenuSignature {
-        accounts: store.accounts.iter().map(|account| {
-            (account.id.clone(),
-             format!("{}{}", account.name, usage_suffix(&account.id)),
-             store.active_account_id.as_deref() == Some(&account.id))
-        }).collect(),
+        accounts: store
+            .accounts
+            .iter()
+            .map(|account| {
+                (
+                    account.id.clone(),
+                    format!("{}{}", account.name, usage_suffix(&account.id)),
+                    store.active_account_id.as_deref() == Some(&account.id),
+                )
+            })
+            .collect(),
         #[cfg(target_os = "macos")]
         dock_mode: load_app_settings().unwrap_or_default().dock_display_mode,
     }
 }
 
 fn defer_menu_refresh(last_click: Option<Instant>, now: Instant) -> bool {
-    last_click.is_some_and(|start| now.saturating_duration_since(start) < TRAY_MENU_INTERACTION_GRACE)
+    last_click
+        .is_some_and(|start| now.saturating_duration_since(start) < TRAY_MENU_INTERACTION_GRACE)
 }
-
 
 const TRAY_ID: &str = "codex-switcher-tray";
 const TRAY_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/tray.png");
@@ -506,9 +511,10 @@ fn refresh_menu_on_main_thread<R: Runtime>(app: &AppHandle<R>) {
     // Do not reassign the native menu for unchanged account labels/state.
     // set_menu() is not a harmless no-op while a Windows popup is visible.
     let signature = menu_signature(&store);
-    let changed = LAST_TRAY_MENU.lock().ok().is_none_or(|previous| {
-        previous.as_ref() != Some(&signature)
-    });
+    let changed = LAST_TRAY_MENU
+        .lock()
+        .ok()
+        .is_none_or(|previous| previous.as_ref() != Some(&signature));
     if changed {
         match build_menu(app, &store) {
             Ok(menu) => match tray.set_menu(Some(menu)) {
@@ -808,7 +814,10 @@ mod tests {
         let now = Instant::now();
         assert!(defer_menu_refresh(Some(now), now + Duration::from_secs(1)));
         assert!(defer_menu_refresh(Some(now), now + Duration::from_secs(19)));
-        assert!(!defer_menu_refresh(Some(now), now + Duration::from_secs(20)));
+        assert!(!defer_menu_refresh(
+            Some(now),
+            now + Duration::from_secs(20)
+        ));
         assert!(!defer_menu_refresh(None, now));
     }
 
