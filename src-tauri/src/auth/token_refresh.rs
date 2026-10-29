@@ -401,10 +401,17 @@ fn can_switch_with_existing_access_token(account: &StoredAccount) -> bool {
 }
 
 fn can_fallback_after_refresh_failure(error: &anyhow::Error, account: &StoredAccount) -> bool {
-    // A still-unexpired JWT is not necessarily a usable Codex session. The
-    // refresh endpoint has positively rejected revoked/reused credentials,
-    // so never silently claim a successful switch with that same session.
-    !refresh_error_invalidates_saved_session(error)
+    // An unexpired JWT is not proof of a valid Codex session. Only transient
+    // network/provider failures may use the previous access token. A terminal
+    // rejection, failed live auth.json write, failed credential persistence or
+    // incomplete token response must never turn into a successful switch.
+    let message = format!("{error:#}").to_lowercase();
+    let transient = message.contains("failed to send token refresh request")
+        || ["429", "500", "502", "503", "504"]
+            .iter()
+            .any(|status| message.contains(&format!("token refresh failed: {status}")));
+    transient
+        && !refresh_error_invalidates_saved_session(error)
         && can_switch_with_existing_access_token(account)
 }
 
@@ -712,9 +719,15 @@ mod tests {
         let revoked = anyhow::anyhow!(
             "401 Unauthorized: refresh_token_invalidated"
         );
-        let temporary = anyhow::anyhow!("network temporarily unavailable");
+        let temporary = anyhow::anyhow!("Failed to send token refresh request: timed out");
+        let failed_live_write = anyhow::anyhow!(
+            "OAuth tokens were saved, but Codex auth.json could not be updated."
+        );
+        let invalid_response = anyhow::anyhow!("Failed to parse token refresh response");
         assert!(!super::can_fallback_after_refresh_failure(&revoked, &account));
         assert!(super::can_fallback_after_refresh_failure(&temporary, &account));
+        assert!(!super::can_fallback_after_refresh_failure(&failed_live_write, &account));
+        assert!(!super::can_fallback_after_refresh_failure(&invalid_response, &account));
     }
 
     #[test]
