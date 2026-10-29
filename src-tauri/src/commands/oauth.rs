@@ -7,8 +7,8 @@ use tokio::sync::oneshot;
 use crate::auth::oauth_server::{start_oauth_login, wait_for_oauth_login, OAuthLoginResult};
 use crate::auth::switch_to_account;
 use crate::auth::{
-    acquire_auth_operation_lock, add_or_replace_account, duplicate_account_requires_confirmation,
-    load_accounts, mutate_accounts, ACCOUNT_REPLACE_CONFIRMATION_PREFIX,
+    acquire_auth_operation_lock, add_or_replace_account, load_accounts, mutate_accounts,
+    same_saved_account, ACCOUNT_REPLACE_CONFIRMATION_PREFIX,
 };
 use crate::types::{
     parse_chatgpt_id_token_claims, AccountInfo, AuthData, OAuthLoginInfo, StoredAccount,
@@ -220,27 +220,51 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
             ));
         }
 
-        // Checking whether an existing session is healthy can refresh tokens,
-        // so do this before acquiring the auth-operation lock.
-        if !force_replace
-            && duplicate_account_requires_confirmation(&account)
-                .await
+        // Re-authentication can already have rotated refresh tokens in the
+        // browser. Do not force-refresh an existing saved account as a
+        // duplicate check: it can block the dialog on network/lock failures
+        // and can rotate a separate single-use token unnecessarily.
+        if !force_replace {
+            let existing = load_accounts()
                 .map_err(|e| e.to_string())?
-        {
-            if cancelled.load(Ordering::Relaxed) {
-                return Err("OAuth login cancelled".into());
+                .accounts
+                .into_iter()
+                .find(|existing| same_saved_account(existing, &account));
+            if let Some(existing) = existing {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err("OAuth login cancelled".into());
+                }
+                PENDING_COMPLETED_ACCOUNT.lock().unwrap().replace(account);
+                return Err(format!("{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}", existing.name));
             }
-            let name = account.name.clone();
-            PENDING_COMPLETED_ACCOUNT.lock().unwrap().replace(account);
-            return Err(format!("{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{name}"));
         }
-        let _guard = acquire_auth_operation_lock()
-            .await
-            .map_err(|e| e.to_string())?;
+
+        // Adding a distinct, inactive account only mutates accounts.json,
+        // which is serialized by accounts.lock. It does not need to wait
+        // behind unrelated token refreshes and the global auth-operation lock.
+        // A forced replacement can affect the active account and still needs
+        // the auth-operation lock.
+        let _guard = if force_replace {
+            Some(acquire_auth_operation_lock().await.map_err(|e| e.to_string())?)
+        } else {
+            None
+        };
         if cancelled.load(Ordering::Relaxed) {
             return Err("OAuth login cancelled".into());
         }
-        let saved = add_or_replace_account(account, true).map_err(|e| e.to_string())?;
+        let saved = match add_or_replace_account(account.clone(), force_replace) {
+            Ok(saved) => saved,
+            Err(error)
+                if !force_replace
+                    && error.to_string().starts_with(ACCOUNT_REPLACE_CONFIRMATION_PREFIX) =>
+            {
+                // A duplicate may have been added concurrently after our
+                // initial lookup. Stage the fresh credentials for confirmation.
+                PENDING_COMPLETED_ACCOUNT.lock().unwrap().replace(account);
+                return Err(error.to_string());
+            }
+            Err(error) => return Err(error.to_string()),
+        };
         let store = load_accounts().map_err(|e| e.to_string())?;
         Ok(AccountInfo::from_stored(
             &saved,
