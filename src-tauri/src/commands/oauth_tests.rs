@@ -142,6 +142,51 @@ async fn duplicate_or_failed_oauth_login_leaves_storage_and_auth_unchanged() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn adding_distinct_oauth_account_does_not_wait_for_unrelated_auth_operations() {
+    let _lock = OAUTH_TEST_LOCK.lock().await;
+    let _home = TestHome::new();
+    let _unrelated_refresh = acquire_auth_operation_lock().await.unwrap();
+    complete_with(Ok(OAuthLoginResult {
+        account: account("brand-new"),
+    }));
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), complete_login(None))
+        .await
+        .expect("adding a distinct account should not wait for an unrelated token refresh")
+        .expect("new login should be saved");
+    assert_eq!(result.name, "brand-new");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn duplicate_oauth_login_stages_credentials_without_network_refresh() {
+    let _lock = OAUTH_TEST_LOCK.lock().await;
+    let _home = TestHome::new();
+    let existing = account("same");
+    save_accounts(&AccountsStore {
+        accounts: vec![existing.clone()],
+        ..AccountsStore::default()
+    })
+    .unwrap();
+    let before = fs::read(get_accounts_file().unwrap()).unwrap();
+    let _unrelated_refresh = acquire_auth_operation_lock().await.unwrap();
+    let mut replacement = account("same");
+    if let AuthData::ChatGPT { refresh_token, .. } = &mut replacement.auth_data {
+        *refresh_token = "new-token".into();
+    }
+    complete_with(Ok(OAuthLoginResult {
+        account: replacement,
+    }));
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), complete_login(None))
+        .await
+        .expect("duplicate confirmation must not wait for network refresh");
+    assert!(result
+        .unwrap_err()
+        .starts_with(ACCOUNT_REPLACE_CONFIRMATION_PREFIX));
+    assert_eq!(fs::read(get_accounts_file().unwrap()).unwrap(), before);
+    assert!(PENDING_COMPLETED_ACCOUNT.lock().unwrap().is_some());
+    PENDING_COMPLETED_ACCOUNT.lock().unwrap().take();
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn same_email_different_workspaces_are_added_without_replacing_active() {
     let _lock = OAUTH_TEST_LOCK.lock().await;
     let _home = TestHome::new();
