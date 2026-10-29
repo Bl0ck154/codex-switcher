@@ -9,6 +9,7 @@ import { finishForceClose, type DesktopReopenPreference } from "./lib/desktopReo
 import type { CodexClosePreference } from "./lib/codexClosePreference";
 import { useForceCloseCodexProcesses } from "./hooks/useForceCloseCodexProcesses";
 import { AccountCard, AddAccountModal, UpdateChecker, WindowResizeBorders } from "./components";
+import { switchRequiresRelogin } from "./lib/accountAuth";
 import type { AccountInfo, AccountWithUsage, CodexProcessInfo, DockDisplayMode, UsageInfo } from "./types";
 import {
   exportFullBackupFile,
@@ -578,7 +579,21 @@ function App() {
       showWarmupToast("Switched account.");
     } catch (err) {
       console.error("Failed to switch account:", err);
-      showWarmupToast(`Switch failed: ${formatWarmupError(err)}`, true);
+      const errorMessage = formatWarmupError(err);
+      if (switchRequiresRelogin(errorMessage)) {
+        const target = accounts.find((account) => account.id === accountId);
+        if (target?.auth_mode === "chat_g_p_t") {
+          // Bring the user directly to re-authentication for the account they
+          // attempted to switch to; a healthy usage bar cannot prove OAuth.
+          setReloginAccount(target);
+          showWarmupToast(
+            "Saved session expired or was revoked. Re-login to this account, then switch again.",
+            true
+          );
+          return;
+        }
+      }
+      showWarmupToast(`Switch failed: ${errorMessage}`, true);
     } finally {
       setSwitchingId(null);
     }
