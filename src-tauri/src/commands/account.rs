@@ -859,9 +859,7 @@ mod automatic_switch_tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn switching_same_active_account_repairs_missing_codex_auth_file() {
-        use crate::auth::{
-            get_codex_auth_file, load_accounts, read_current_auth, save_accounts,
-        };
+        use crate::auth::{get_codex_auth_file, load_accounts, read_current_auth, save_accounts};
         use crate::types::StoredAccount;
         use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 
@@ -892,7 +890,10 @@ mod automatic_switch_tests {
         switch_account_by_id(&account.id).await.unwrap();
 
         let live = read_current_auth().unwrap().unwrap();
-        assert_eq!(live.tokens.unwrap().account_id.as_deref(), Some("workspace"));
+        assert_eq!(
+            live.tokens.unwrap().account_id.as_deref(),
+            Some("workspace")
+        );
         assert_eq!(
             load_accounts().unwrap().active_account_id.as_deref(),
             Some(account.id.as_str())

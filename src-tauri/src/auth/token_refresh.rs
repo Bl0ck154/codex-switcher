@@ -716,18 +716,25 @@ mod tests {
             "revoked-refresh".into(),
             None,
         );
-        let revoked = anyhow::anyhow!(
-            "401 Unauthorized: refresh_token_invalidated"
-        );
+        let revoked = anyhow::anyhow!("401 Unauthorized: refresh_token_invalidated");
         let temporary = anyhow::anyhow!("Failed to send token refresh request: timed out");
-        let failed_live_write = anyhow::anyhow!(
-            "OAuth tokens were saved, but Codex auth.json could not be updated."
-        );
+        let failed_live_write =
+            anyhow::anyhow!("OAuth tokens were saved, but Codex auth.json could not be updated.");
         let invalid_response = anyhow::anyhow!("Failed to parse token refresh response");
-        assert!(!super::can_fallback_after_refresh_failure(&revoked, &account));
-        assert!(super::can_fallback_after_refresh_failure(&temporary, &account));
-        assert!(!super::can_fallback_after_refresh_failure(&failed_live_write, &account));
-        assert!(!super::can_fallback_after_refresh_failure(&invalid_response, &account));
+        assert!(!super::can_fallback_after_refresh_failure(
+            &revoked, &account
+        ));
+        assert!(super::can_fallback_after_refresh_failure(
+            &temporary, &account
+        ));
+        assert!(!super::can_fallback_after_refresh_failure(
+            &failed_live_write,
+            &account
+        ));
+        assert!(!super::can_fallback_after_refresh_failure(
+            &invalid_response,
+            &account
+        ));
     }
 
     #[test]
