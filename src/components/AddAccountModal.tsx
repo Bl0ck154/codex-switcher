@@ -222,6 +222,9 @@ export function AddAccountModal({
             <div className="space-y-2 text-sm text-gray-600 dark:text-gray-300">
               <p>Sign in as <strong>{reloginAccount.email ?? reloginAccount.name}</strong> and select the same workspace.</p>
               <p>Your saved account name and settings will be kept.</p>
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                Usage limits can still update with an existing access token even when the saved login can no longer be renewed for Codex. Re-login restores the credentials needed for switching.
+              </p>
               {reloginAccount.is_active && <p>Close Codex or switch to another account first so Codex cannot overwrite the renewed login.</p>}
             </div>
           )}
