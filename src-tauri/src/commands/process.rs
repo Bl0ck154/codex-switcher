@@ -647,8 +647,9 @@ Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue | ForEach-Object {
   $windowTitles[[uint32]$_.Id] = $_.MainWindowTitle
 }
 
-Get-CimInstance Win32_Process |
-  Where-Object { $_.Name -ieq 'Codex.exe' -or $_.Name -ieq 'ChatGPT.exe' } |
+# WMI server-side filter: do not enumerate every process on the machine
+# for each check. Switch performs a UI preflight and a backend safety check.
+Get-CimInstance -ClassName Win32_Process -Filter "Name='Codex.exe' OR Name='ChatGPT.exe'" |
   ForEach-Object {
     [PSCustomObject]@{
       Name = $_.Name

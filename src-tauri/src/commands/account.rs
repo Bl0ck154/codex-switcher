@@ -26,12 +26,7 @@ use sha2::Sha256;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+use std::time::Instant;
 
 const SLIM_EXPORT_PREFIX: &str = "css1.";
 const SLIM_FORMAT_VERSION: u8 = 1;
@@ -184,9 +179,11 @@ async fn switch_account_checked(
     account_id: &str,
     expected_active_id: Option<&str>,
 ) -> Result<(), String> {
+    let switch_started = Instant::now();
     let _auth_guard = acquire_auth_operation_lock()
         .await
         .map_err(|e| e.to_string())?;
+    let lock_elapsed = switch_started.elapsed();
     let mut store = load_accounts().map_err(|e| e.to_string())?;
     // Check under the same auth lock used by native tray switches.
     if expected_active_id.is_some() && store.active_account_id.as_deref() != expected_active_id {
@@ -217,6 +214,8 @@ async fn switch_account_checked(
         println!("[Account] Failed to stop the Codex CLI daemon: {err:#}");
     }
 
+    let process_elapsed = switch_started.elapsed();
+
     // ChatGPT rotates single-use refresh tokens. Preserve the latest token
     // before replacing auth.json, otherwise switching back restores a stale one.
     if let Some(auth) = read_current_auth().map_err(|e| e.to_string())? {
@@ -238,6 +237,7 @@ async fn switch_account_checked(
     let account = ensure_chatgpt_tokens_fresh_locked(&store.accounts[target_index])
         .await
         .map_err(|e| e.to_string())?;
+    let token_elapsed = switch_started.elapsed();
 
     // Write to ~/.codex/auth.json
     switch_to_account(&account).map_err(|e| e.to_string())?;
@@ -251,26 +251,29 @@ async fn switch_account_checked(
     // Update last_used_at
     touch_account(account_id).map_err(|e| e.to_string())?;
 
-    // Restart Antigravity background process if it is running
-    // This allows it to pick up the new authorization file seamlessly
+    // Restart only positively identified Antigravity helpers on Unix.
+    // Windows previously used tasklist to match *every* codex.exe, then
+    // taskkill /F on each one. That was both slow and dangerous: it could
+    // terminate unrelated Codex sessions. No reliable Windows-specific
+    // Antigravity identity test exists here, so do not kill any process.
+    #[cfg(unix)]
     if let Ok(pids) = find_antigravity_processes() {
         for pid in pids {
-            #[cfg(unix)]
-            {
-                let _ = std::process::Command::new("kill")
-                    .arg("-9")
-                    .arg(pid.to_string())
-                    .output();
-            }
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &pid.to_string()])
-                    .output();
-            }
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(pid.to_string())
+                .output();
         }
     }
 
+    println!(
+        "[Switch] completed in {}ms (auth lock: {}ms; process checks: {}ms; token checks: {}ms; file and post-switch: {}ms)",
+        switch_started.elapsed().as_millis(),
+        lock_elapsed.as_millis(),
+        (process_elapsed - lock_elapsed).as_millis(),
+        (token_elapsed - process_elapsed).as_millis(),
+        switch_started.elapsed().saturating_sub(token_elapsed).as_millis(),
+    );
     Ok(())
 }
 
@@ -378,11 +381,11 @@ pub async fn import_accounts_full_encrypted_bytes(
     .map_err(|e| e.to_string())
 }
 
-/// Find all running Antigravity codex assistant processes
+/// Find positively identified Antigravity codex assistant processes (Unix).
+#[cfg(unix)]
 fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
     let mut pids = Vec::new();
 
-    #[cfg(unix)]
     {
         // Use ps with custom format to get the pid and full command line
         let output = std::process::Command::new("ps")
@@ -407,31 +410,6 @@ fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
                         || command.contains("/codex app-server"));
 
                 if is_antigravity {
-                    if let Ok(pid) = pid_str.parse::<u32>() {
-                        pids.push(pid);
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Use tasklist on Windows
-        // For Windows we might need a more precise WMI query to get command line args,
-        // but for now we look for codex.exe PIDs and verify they're not ours
-        let output = std::process::Command::new("tasklist")
-            .creation_flags(CREATE_NO_WINDOW)
-            .args(["/FI", "IMAGENAME eq codex.exe", "/FO", "CSV", "/NH"])
-            .output()?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() > 1 {
-                let name = parts[0].trim_matches('"').to_lowercase();
-                if name == "codex.exe" {
-                    let pid_str = parts[1].trim_matches('"');
                     if let Ok(pid) = pid_str.parse::<u32>() {
                         pids.push(pid);
                     }
