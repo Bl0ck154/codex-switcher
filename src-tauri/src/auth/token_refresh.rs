@@ -10,8 +10,8 @@ use std::{
 use tokio::time::Duration;
 
 use super::{
-    load_accounts, mutate_accounts, read_current_auth, same_saved_account,
-    switch_to_account, sync_active_account_tokens, try_acquire_background_auth_operation_lock,
+    load_accounts, mutate_accounts, read_current_auth, same_saved_account, switch_to_account,
+    sync_active_account_tokens, try_acquire_background_auth_operation_lock,
     update_account_chatgpt_tokens,
 };
 use crate::types::{

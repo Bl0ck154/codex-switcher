@@ -61,8 +61,8 @@ pub(crate) async fn acquire_auth_operation_lock() -> anyhow::Result<AuthOperatio
 
 #[cfg(test)]
 mod auth_operation_tests {
-    use super::{acquire_auth_operation_lock, try_acquire_background_auth_operation_lock};
     use super::test_support::TestHome;
+    use super::{acquire_auth_operation_lock, try_acquire_background_auth_operation_lock};
     use tokio::time::{timeout, Duration};
 
     #[tokio::test(flavor = "current_thread")]
@@ -71,12 +71,10 @@ mod auth_operation_tests {
         let first = acquire_auth_operation_lock().await.unwrap();
         // A background poll must skip this turn instead of queuing in front
         // of an explicit OAuth completion.
-        assert!(
-            try_acquire_background_auth_operation_lock()
-                .await
-                .unwrap()
-                .is_none()
-        );
+        assert!(try_acquire_background_auth_operation_lock()
+            .await
+            .unwrap()
+            .is_none());
         assert!(
             timeout(Duration::from_millis(60), acquire_auth_operation_lock())
                 .await
