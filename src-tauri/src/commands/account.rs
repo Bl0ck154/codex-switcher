@@ -2,9 +2,9 @@
 
 use crate::auth::{
     acquire_auth_operation_lock, add_or_replace_account, create_chatgpt_account_from_refresh_token,
-    duplicate_account_requires_confirmation, ensure_chatgpt_tokens_fresh_locked,
-    get_active_account, import_from_auth_json, import_from_auth_json_contents, load_accounts,
-    mutate_accounts, read_current_auth, remove_account, set_active_account, switch_to_account,
+    ensure_chatgpt_tokens_fresh_locked, get_active_account, import_from_auth_json,
+    import_from_auth_json_contents, load_accounts, mutate_accounts, read_current_auth,
+    remove_account, same_saved_account, set_active_account, switch_to_account,
     sync_active_account_tokens, touch_account, ACCOUNT_REPLACE_CONFIRMATION_PREFIX,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
@@ -111,18 +111,25 @@ pub async fn add_account_from_file(
     let account = import_from_auth_json(&path, name).map_err(|e| e.to_string())?;
 
     let force_replace = force_replace.unwrap_or(false);
-    if !force_replace
-        && duplicate_account_requires_confirmation(&account)
-            .await
+    // Importing a local auth.json must not hit the OAuth token endpoint to
+    // verify a duplicate. Rotating its single-use refresh token here can
+    // invalidate another Codex session and block the Add dialog on network IO.
+    // Require explicit confirmation for *any* matching saved workspace.
+    if !force_replace {
+        if let Some(existing) = load_accounts()
             .map_err(|e| e.to_string())?
-    {
-        return Err(format!(
-            "{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}",
-            account.name
-        ));
+            .accounts
+            .iter()
+            .find(|existing| same_saved_account(existing, &account))
+        {
+            return Err(format!(
+                "{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}",
+                existing.name
+            ));
+        }
     }
 
-    let stored = add_or_replace_account(account, true).map_err(|e| e.to_string())?;
+    let stored = add_or_replace_account(account, force_replace).map_err(|e| e.to_string())?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
@@ -138,18 +145,25 @@ pub async fn add_account_from_auth_json_text(
 ) -> Result<AccountInfo, String> {
     let account = import_from_auth_json_contents(&contents, name).map_err(|e| e.to_string())?;
     let force_replace = force_replace.unwrap_or(false);
-    if !force_replace
-        && duplicate_account_requires_confirmation(&account)
-            .await
+    // Importing a local auth.json must not hit the OAuth token endpoint to
+    // verify a duplicate. Rotating its single-use refresh token here can
+    // invalidate another Codex session and block the Add dialog on network IO.
+    // Require explicit confirmation for *any* matching saved workspace.
+    if !force_replace {
+        if let Some(existing) = load_accounts()
             .map_err(|e| e.to_string())?
-    {
-        return Err(format!(
-            "{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}",
-            account.name
-        ));
+            .accounts
+            .iter()
+            .find(|existing| same_saved_account(existing, &account))
+        {
+            return Err(format!(
+                "{ACCOUNT_REPLACE_CONFIRMATION_PREFIX}{}",
+                existing.name
+            ));
+        }
     }
 
-    let stored = add_or_replace_account(account, true).map_err(|e| e.to_string())?;
+    let stored = add_or_replace_account(account, force_replace).map_err(|e| e.to_string())?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();

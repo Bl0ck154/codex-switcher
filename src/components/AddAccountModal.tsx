@@ -23,7 +23,7 @@ interface AddAccountModalProps {
   reloginAccount?: AccountInfo | null;
   isOpen: boolean;
   onClose: () => void;
-  onImportFile: (source: FileSource, name: string, forceReplace?: boolean) => Promise<void>;
+  onImportFile: (source: FileSource, name: string, forceReplace?: boolean) => Promise<unknown>;
   onStartOAuth: (name: string, reauthAccountId?: string) => Promise<{ auth_url: string }>;
   onCompleteOAuth: (forceReplace?: boolean) => Promise<unknown>;
   onCancelOAuth: () => Promise<void>;

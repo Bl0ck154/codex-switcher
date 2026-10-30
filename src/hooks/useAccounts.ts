@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import { invokeBackend, isTauriRuntime, type FileSource } from "../lib/platform";
 import { completeOAuthWithoutBlockingOnUsage } from "../lib/oauthCompletion";
+import { completeImportWithoutBlockingOnUsage } from "../lib/accountImportCompletion";
 
 export function useAccounts() {
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
@@ -325,24 +326,23 @@ export function useAccounts() {
   );
 
   const importFromFile = useCallback(
-    async (source: FileSource, name: string, forceReplace = false) => {
-      try {
-        if (typeof source === "string") {
-          await invokeBackend<AccountInfo>("add_account_from_file", { path: source, name, forceReplace });
-        } else {
+    (source: FileSource, name: string, forceReplace = false) =>
+      completeImportWithoutBlockingOnUsage(
+        async () => {
+          if (typeof source === "string") {
+            return invokeBackend<AccountInfo>("add_account_from_file", { path: source, name, forceReplace });
+          }
           const contents = await source.text();
-          await invokeBackend<AccountInfo>("add_account_from_auth_json_text", {
+          return invokeBackend<AccountInfo>("add_account_from_auth_json_text", {
             name,
             contents,
             forceReplace,
           });
-        }
-        const accountList = await loadAccounts();
-        await refreshUsage(accountList);
-      } catch (err) {
-        throw err;
-      }
-    },
+        },
+        () => loadAccounts(true),
+        (account) => refreshUsage([account]),
+        (err) => console.warn("Failed to refresh imported account usage:", err),
+      ),
     [loadAccounts, refreshUsage]
   );
 
