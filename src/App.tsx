@@ -587,7 +587,7 @@ function App() {
           // attempted to switch to; a healthy usage bar cannot prove OAuth.
           setReloginAccount(target);
           showWarmupToast(
-            "Saved session expired or was revoked. Re-login to this account, then switch again.",
+            "Usage may still work, but Codex Switcher could not renew this account's login. Re-login, then switch again.",
             true
           );
           return;
