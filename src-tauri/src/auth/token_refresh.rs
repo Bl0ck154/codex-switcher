@@ -10,8 +10,8 @@ use std::{
 use tokio::time::Duration;
 
 use super::{
-    acquire_auth_operation_lock, load_accounts, mutate_accounts, read_current_auth,
-    same_saved_account, switch_to_account, sync_active_account_tokens,
+    load_accounts, mutate_accounts, read_current_auth, same_saved_account,
+    switch_to_account, sync_active_account_tokens, try_acquire_background_auth_operation_lock,
     update_account_chatgpt_tokens,
 };
 use crate::types::{
@@ -92,7 +92,11 @@ pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<Stor
         return Ok(account.clone());
     }
 
-    let _auth_guard = acquire_auth_operation_lock().await?;
+    // Don't let periodic quota/metadata refresh calls form a FIFO backlog.
+    // They are retryable and must not block an interactive OAuth completion.
+    let _auth_guard = try_acquire_background_auth_operation_lock()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Background OAuth refresh busy; retry next poll"))?;
     ensure_chatgpt_tokens_fresh_with_policy_locked(account, false).await
 }
 
@@ -179,7 +183,9 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
         return Ok(account.clone());
     }
 
-    let _auth_guard = acquire_auth_operation_lock().await?;
+    let _auth_guard = try_acquire_background_auth_operation_lock()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Background OAuth refresh busy; retry next poll"))?;
     refresh_chatgpt_tokens_locked(account).await
 }
 

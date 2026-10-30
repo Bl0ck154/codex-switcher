@@ -188,9 +188,14 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
             return Err("OAuth login cancelled".into());
         }
         if let Some(id) = target {
+            let lock_wait_started = std::time::Instant::now();
             let _guard = acquire_auth_operation_lock()
                 .await
                 .map_err(|e| e.to_string())?;
+            eprintln!(
+                "[OAuth] Completed callback, acquired auth-operation lock in {} ms",
+                lock_wait_started.elapsed().as_millis()
+            );
             if cancelled.load(Ordering::Relaxed) {
                 return Err("OAuth login cancelled".into());
             }

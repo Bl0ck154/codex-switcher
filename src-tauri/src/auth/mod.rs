@@ -20,6 +20,29 @@ pub(crate) struct AuthOperationGuard {
 /// Always acquire the auth-operation lock before accounts.lock or auth.lock.
 /// Obtain the filesystem path on the caller's thread to retain isolated
 /// test homes; wait for the OS lock on a blocking thread, off the runtime.
+/// Background quota/metadata refreshes must never queue in front of an
+/// interactive Switch or completed browser OAuth login. They can retry on the
+/// next poll, whereas a user operation must not wait behind many accounts.
+pub(crate) async fn try_acquire_background_auth_operation_lock(
+) -> anyhow::Result<Option<AuthOperationGuard>> {
+    use anyhow::Context;
+
+    let local = match AUTH_OPERATION_LOCK.try_lock() {
+        Ok(local) => local,
+        Err(_) => return Ok(None),
+    };
+    let directory = storage::get_config_dir()?;
+    std::fs::create_dir_all(&directory)?;
+    let path = directory.join("auth-operation.lock");
+    let file = tokio::task::spawn_blocking(move || storage::acquire_mutation_lock_at(&path))
+        .await
+        .context("Background auth-operation lock worker terminated")??;
+    Ok(Some(AuthOperationGuard {
+        _local: local,
+        _file: file,
+    }))
+}
+
 pub(crate) async fn acquire_auth_operation_lock() -> anyhow::Result<AuthOperationGuard> {
     use anyhow::Context;
 
@@ -38,7 +61,7 @@ pub(crate) async fn acquire_auth_operation_lock() -> anyhow::Result<AuthOperatio
 
 #[cfg(test)]
 mod auth_operation_tests {
-    use super::acquire_auth_operation_lock;
+    use super::{acquire_auth_operation_lock, try_acquire_background_auth_operation_lock};
     use super::test_support::TestHome;
     use tokio::time::{timeout, Duration};
 
@@ -46,6 +69,14 @@ mod auth_operation_tests {
     async fn second_auth_operation_waits_until_first_releases() {
         let _home = TestHome::new();
         let first = acquire_auth_operation_lock().await.unwrap();
+        // A background poll must skip this turn instead of queuing in front
+        // of an explicit OAuth completion.
+        assert!(
+            try_acquire_background_auth_operation_lock()
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(
             timeout(Duration::from_millis(60), acquire_auth_operation_lock())
                 .await

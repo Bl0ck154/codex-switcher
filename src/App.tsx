@@ -2278,19 +2278,25 @@ function App() {
           // If switching fails, keep the successfully saved credentials.
           if (switchAfterReloginId && reloginAccount?.id === switchAfterReloginId) {
             const targetId = switchAfterReloginId;
+            setSwitchAfterReloginId(null);
             setSwitchingId(targetId);
-            try {
-              await switchAccount(targetId);
-              showWarmupToast("Re-login successful. Account switched.");
-            } catch (err) {
-              showWarmupToast(
-                `Re-login saved, but switching failed: ${formatWarmupError(err)}`,
-                true
-              );
-            } finally {
-              setSwitchingId(null);
-              setSwitchAfterReloginId(null);
-            }
+            showWarmupToast("Re-login saved. Switching account...");
+            // Do not keep the OAuth dialog saying "Waiting for browser login"
+            // once credentials have been successfully saved. The potentially
+            // slower account switch is a separate operation, shown on its card.
+            void (async () => {
+              try {
+                await switchAccount(targetId);
+                showWarmupToast("Re-login successful. Account switched.");
+              } catch (err) {
+                showWarmupToast(
+                  `Re-login saved, but switching failed: ${formatWarmupError(err)}`,
+                  true
+                );
+              } finally {
+                setSwitchingId(null);
+              }
+            })();
           }
           return saved;
         }}
