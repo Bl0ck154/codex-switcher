@@ -192,6 +192,9 @@ function App() {
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [reloginAccount, setReloginAccount] = useState<AccountInfo | null>(null);
+  // A Switch that required Re-login must complete the original requested
+  // switch after new credentials are saved. Manual Re-login stays non-switching.
+  const [switchAfterReloginId, setSwitchAfterReloginId] = useState<string | null>(null);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [configModalMode, setConfigModalMode] = useState<"slim_export" | "slim_import">(
     "slim_export"
@@ -585,6 +588,7 @@ function App() {
         if (target?.auth_mode === "chat_g_p_t") {
           // Bring the user directly to re-authentication for the account they
           // attempted to switch to; a healthy usage bar cannot prove OAuth.
+          setSwitchAfterReloginId(accountId);
           setReloginAccount(target);
           showWarmupToast(
             "Usage may still work, but Codex Switcher could not renew this account's login. Re-login, then switch again.",
@@ -2260,10 +2264,36 @@ function App() {
         key={reloginAccount?.id ?? (isAddModalOpen ? "add-open" : "closed")}
         isOpen={isAddModalOpen || reloginAccount !== null}
         reloginAccount={reloginAccount}
-        onClose={() => { setIsAddModalOpen(false); setReloginAccount(null); }}
+        onClose={() => {
+          setIsAddModalOpen(false);
+          setReloginAccount(null);
+          setSwitchAfterReloginId(null);
+        }}
         onImportFile={importFromFile}
         onStartOAuth={startOAuthLogin}
-        onCompleteOAuth={completeOAuthLogin}
+        onCompleteOAuth={async (forceReplace) => {
+          const saved = await completeOAuthLogin(forceReplace);
+          // The user originally clicked Switch, not just Re-login: finish
+          // that action after renewal without making them click twice.
+          // If switching fails, keep the successfully saved credentials.
+          if (switchAfterReloginId && reloginAccount?.id === switchAfterReloginId) {
+            const targetId = switchAfterReloginId;
+            setSwitchingId(targetId);
+            try {
+              await switchAccount(targetId);
+              showWarmupToast("Re-login successful. Account switched.");
+            } catch (err) {
+              showWarmupToast(
+                `Re-login saved, but switching failed: ${formatWarmupError(err)}`,
+                true
+              );
+            } finally {
+              setSwitchingId(null);
+              setSwitchAfterReloginId(null);
+            }
+          }
+          return saved;
+        }}
         onCancelOAuth={cancelOAuthLogin}
       />
 
