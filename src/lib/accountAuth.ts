@@ -1,7 +1,7 @@
 /** An access-token 401 alone is not proof that a refresh token was revoked. */
 export function needsRelogin(error: string | null | undefined): boolean {
   if (!error) return false;
-  return /ACCOUNT_RELOGIN_REQUIRED:|refresh_token_(?:reused|expired|invalidated)|invalid_grant|token_invalidated|authentication token[^\\n]*(?:expired|invalid|revoked)|saved session is out of date|outdated refresh token|invalid refresh token|refresh token is invalid|missing refresh token|did not return a fresh id_token|invalid or expired id_token|your session has ended/i.test(error);
+  return /ACCOUNT_RELOGIN_REQUIRED:|refresh_token_(?:reused|expired|invalidated)|invalid_grant|token_invalidated|authentication token.*(?:expired|invalid|revoked)|saved session is out of date|outdated refresh token|invalid refresh token|refresh token is invalid|missing refresh token|did not return a fresh id_token|invalid or expired id_token|your session has ended/i.test(error);
 }
 
 /** A background auth lock is a busy state, not an authentication failure. */
