@@ -109,7 +109,7 @@ async fn exchange_code_for_tokens(
 
     let resp = client
         .post(format!("{issuer}/oauth/token"))
-// A stalled token endpoint must not leave "Waiting for browser login"
+        // A stalled token endpoint must not leave "Waiting for browser login"
         // spinning indefinitely. Authorization codes are single-use: do not
         // retry the POST after an uncertain timeout.
         .timeout(Duration::from_secs(25))
