@@ -8,9 +8,6 @@ pub mod token_refresh;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-// ponytail: refreshes are rare; one global lock keeps auth.json and accounts.json ordered.
-pub(crate) static AUTH_OPERATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 pub use oauth_server::*;
 pub use storage::*;
 pub use switcher::*;
