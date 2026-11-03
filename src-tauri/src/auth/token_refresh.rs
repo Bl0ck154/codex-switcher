@@ -129,7 +129,9 @@ Proceeding with the existing unexpired access token.",
     }
 }
 
-async fn ensure_chatgpt_access_token_fresh_locked(account: &StoredAccount) -> Result<StoredAccount> {
+async fn ensure_chatgpt_access_token_fresh_locked(
+    account: &StoredAccount,
+) -> Result<StoredAccount> {
     if matches!(account.auth_data, AuthData::ApiKey { .. }) {
         return Ok(account.clone());
     }
@@ -588,11 +590,11 @@ async fn refresh_tokens_with_refresh_token_at(
 mod tests {
     use super::{
         can_switch_with_existing_access_token, chatgpt_access_token_needs_refresh,
-        clear_saved_session_stale,
-        format_token_refresh_error, mark_saved_session_stale, merge_refresh_response,
-        reconcile_active_account_from_auth, refresh_error_invalidates_saved_session,
-        resolve_refreshed_id_token, should_refresh_proactively_at, take_saved_session_stale,
-        token_expired_or_near_expiry_at, RefreshTokenResponse,
+        clear_saved_session_stale, format_token_refresh_error, mark_saved_session_stale,
+        merge_refresh_response, reconcile_active_account_from_auth,
+        refresh_error_invalidates_saved_session, resolve_refreshed_id_token,
+        should_refresh_proactively_at, take_saved_session_stale, token_expired_or_near_expiry_at,
+        RefreshTokenResponse,
     };
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
