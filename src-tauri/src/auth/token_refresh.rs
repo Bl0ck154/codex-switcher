@@ -465,11 +465,9 @@ fn resolve_refreshed_id_token(
             anyhow::bail!("Token refresh returned an invalid or expired id_token")
         }
         Some(id_token) => Ok(id_token),
-        None if id_token_needs_refresh_at(&current_id_token, now) => {
-            anyhow::bail!(
-                "Token refresh did not return a fresh id_token; sign in to the account again"
-            )
-        }
+        // The OAuth endpoint can return a new access token without a new ID
+        // token. Codex uses the access token's expiry for refresh decisions,
+        // so keep the identity claims even if their ID token is older.
         None => Ok(current_id_token),
     }
 }
@@ -893,15 +891,14 @@ mod tests {
     }
 
     #[test]
-    fn expired_id_token_requires_replacement_from_refresh_response() {
+    fn expired_id_token_is_preserved_when_refresh_only_returns_access_token() {
         let now = 1_800_000_000;
         let current_id_token = jwt_with_exp(now - 3_600);
 
-        let error = resolve_refreshed_id_token(current_id_token, None, now).unwrap_err();
-
-        assert!(error
-            .to_string()
-            .contains("did not return a fresh id_token"));
+        assert_eq!(
+            resolve_refreshed_id_token(current_id_token.clone(), None, now).unwrap(),
+            current_id_token
+        );
     }
 
     #[test]
@@ -1015,7 +1012,7 @@ mod tests {
 
         assert_eq!(update.id_token, current_id_token);
         assert_eq!(update.refresh_token, "rotated-refresh");
-        assert!(update.id_token_error.is_some());
+        assert!(update.id_token_error.is_none());
     }
 
     #[test]
