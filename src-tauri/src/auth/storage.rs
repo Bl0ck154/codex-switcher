@@ -138,7 +138,18 @@ pub(crate) fn acquire_mutation_lock(lock_name: &str) -> Result<MutationLock> {
 }
 
 pub(crate) async fn acquire_auth_operation_lock() -> Result<MutationLock> {
-    tokio::task::spawn_blocking(|| acquire_mutation_lock("auth-operation.lock"))
+    // Resolve the path on the caller's thread. Current-thread OAuth tests
+    // isolate their filesystem through a thread-local TestHome fixture.
+    let config_dir = get_config_dir()?;
+    fs::create_dir_all(&config_dir).with_context(|| {
+        format!(
+            "Failed to create config directory: {}",
+            config_dir.display()
+        )
+    })?;
+    let path = config_dir.join("auth-operation.lock");
+
+    tokio::task::spawn_blocking(move || acquire_mutation_lock_at(&path))
         .await
         .context("Auth operation lock task failed")?
 }
@@ -595,6 +606,13 @@ pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(flavor = "current_thread")]
+    async fn auth_lock_uses_callers_test_home() {
+        let _home = crate::auth::test_support::TestHome::new();
+        let guard = super::acquire_auth_operation_lock().await.unwrap();
+        drop(guard);
+    }
+
     use super::{
         acquire_mutation_lock_at, add_account_to_store, sync_active_account_tokens,
         update_account_chatgpt_tokens_in_store, write_file_atomic,
