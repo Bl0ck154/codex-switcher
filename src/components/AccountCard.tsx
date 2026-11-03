@@ -3,7 +3,8 @@ import type { AccountResetCredits, AccountWithUsage } from "../types";
 import { invokeBackend } from "../lib/platform";
 import { AccountUsageStats } from "./AccountUsageStats";
 import { ResetCreditsMenu } from "./ResetCreditsMenu";
-import { getResetCreditsDisplayCount } from "../lib/resetCredits";
+import { getResetCreditsDisplayCount, queueResetCreditsCheck } from "../lib/resetCredits";
+import { retryBusyUsage } from "../lib/retryBusyUsage";
 import { needsRelogin } from "../lib/accountAuth";
 import { UsageBar } from "./UsageBar";
 
@@ -238,9 +239,11 @@ export function AccountCard({
     try {
       // Fetch resets independently: profile usage stats may be unavailable or
       // disabled even when the account has valid, unspent reset credits.
-      const credits = await invokeBackend<AccountResetCredits>("get_account_reset_credits", {
-        accountId: account.id,
-      });
+      const credits = await queueResetCreditsCheck(() =>
+        retryBusyUsage(() => invokeBackend<AccountResetCredits>("get_account_reset_credits", {
+          accountId: account.id,
+        }))
+      );
       if (requestId !== resetRequestSeq.current) return;
       setResetCredits(credits);
       setResetCreditsError(false);
@@ -273,8 +276,8 @@ export function AccountCard({
   // Retry transient failures sooner than the six-hour periodic refresh.
   useEffect(() => {
     if (!resetCreditsError) return;
-    const timer = window.setTimeout(() => void loadResetCredits(), 5 * 60 * 1000);
-    return () => window.clearTimeout(timer);
+    const timer = window.setInterval(() => void loadResetCredits(), 5 * 60 * 1000);
+    return () => window.clearInterval(timer);
   }, [loadResetCredits, resetCreditsError]);
 
   return (
@@ -510,7 +513,7 @@ export function AccountCard({
         open={statsOpen}
         usage={account.usage}
         usageLoading={account.usageLoading}
-       />
+      />
     </div>
   );
 }
