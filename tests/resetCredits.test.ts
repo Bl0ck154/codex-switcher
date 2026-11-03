@@ -4,6 +4,7 @@ import {
   formatResetCreditDateTime,
   getAvailableResetCredits,
   getResetCreditsDisplayCount,
+  queueResetCreditsCheck,
 } from "../src/lib/resetCredits.ts";
 import type { AccountResetCredit, AccountResetCredits } from "../src/types/index.ts";
 
@@ -92,4 +93,28 @@ test("reported count fills missing details without double-counting known resets"
   assert.equal(getResetCreditsDisplayCount(resets, now), 2);
   assert.equal(getResetCreditsDisplayCount({ ...resets, available_count: 0 }, now), 1);
   assert.equal(getResetCreditsDisplayCount(null, now), 0);
+});
+
+test("reset checks are serialized even if a prior account request fails", async () => {
+  const started: string[] = [];
+  let releaseFirst: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+
+  const first = queueResetCreditsCheck(async () => {
+    started.push("first");
+    await gate;
+    throw new Error("Transient OAuth lock");
+  });
+  const second = queueResetCreditsCheck(async () => {
+    started.push("second");
+    return "available";
+  });
+
+  // The second account must not begin while the first still holds the queue.
+  await Promise.resolve();
+  assert.deepEqual(started, ["first"]);
+  releaseFirst?.();
+  await assert.rejects(first, /Transient OAuth lock/);
+  assert.equal(await second, "available");
+  assert.deepEqual(started, ["first", "second"]);
 });
