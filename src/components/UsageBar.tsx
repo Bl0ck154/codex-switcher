@@ -1,4 +1,5 @@
 import type { UsageInfo } from "../types";
+import { formatUsageError } from "../lib/accountAuth";
 
 interface UsageBarProps {
   usage?: UsageInfo;
@@ -34,44 +35,6 @@ function formatWindowDuration(minutes: number | null | undefined): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
-}
-
-function formatUsageError(error: string): { title: string; message: string } {
-  const lowerError = error.toLowerCase();
-
-  if (
-    lowerError.includes("invalid refresh token") ||
-    lowerError.includes("could not refresh the saved codex switcher session") ||
-    (lowerError.includes("401 unauthorized") && lowerError.includes("refresh")) ||
-    lowerError.includes("refresh_token_invalidated") ||
-    lowerError.includes("saved session is out of date") ||
-    lowerError.includes("refresh_token_reused") ||
-    lowerError.includes("outdated refresh token")
-  ) {
-    return {
-      title: "Account sign-in expired",
-      message: "Re-authenticate this account in Codex Switcher.",
-    };
-  }
-
-  if (lowerError.includes("failed to parse usage response")) {
-    return {
-      title: "Usage format changed",
-      message: "The account may still be signed in. Switcher couldn't read the usage response.",
-    };
-  }
-
-  if (error.includes("Token refresh failed:") && error.includes("\"error\"")) {
-    return {
-      title: "Could not refresh Switcher",
-      message: "Retry here before re-authenticating.",
-    };
-  }
-
-  return {
-    title: "Usage unavailable",
-    message: error,
-  };
 }
 
 function RateLimitBar({
