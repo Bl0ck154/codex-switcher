@@ -46,6 +46,20 @@ export function getResetCreditsDisplayCount(
   return Math.max(reportedCount, getAvailableResetCredits(resetCredits, now).length);
 }
 
+// Account cards mount together, but the backend can only rotate one OAuth
+// session at a time. Serialize independent reset-credit checks to avoid
+// reporting transient "Background OAuth refresh busy" as missing credits.
+let resetCreditsQueue: Promise<void> = Promise.resolve();
+
+export function queueResetCreditsCheck<T>(request: () => Promise<T>): Promise<T> {
+  const next = resetCreditsQueue.then(request);
+  resetCreditsQueue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
 export function formatResetCreditDateTime(
   expiresAt: string | null,
   options: ResetCreditDateTimeFormatOptions = {},
