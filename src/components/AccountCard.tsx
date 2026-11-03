@@ -1,9 +1,9 @@
 import { useCallback, useState, useRef, useEffect } from "react";
-import type { AccountResetCredits, AccountUsageStats as AccountUsageStatsInfo, AccountWithUsage } from "../types";
+import type { AccountResetCredits, AccountWithUsage } from "../types";
 import { invokeBackend } from "../lib/platform";
 import { AccountUsageStats } from "./AccountUsageStats";
 import { ResetCreditsMenu } from "./ResetCreditsMenu";
-import { getAvailableResetCredits } from "../lib/resetCredits";
+import { getResetCreditsDisplayCount } from "../lib/resetCredits";
 import { needsRelogin } from "../lib/accountAuth";
 import { UsageBar } from "./UsageBar";
 
@@ -123,6 +123,8 @@ export function AccountCard({
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(account.name);
   const [resetCredits, setResetCredits] = useState<AccountResetCredits | null>(null);
+  const [resetCreditsError, setResetCreditsError] = useState(false);
+  const [resetCreditsLoading, setResetCreditsLoading] = useState(false);
   const [statsOpen, setStatsOpen] = useState<boolean>(() => {
     if (typeof window === "undefined") return account.is_active;
     try {
@@ -170,6 +172,8 @@ export function AccountCard({
     setIsRefreshing(true);
     try {
       await onRefresh();
+      // The regular 5h/7d usage endpoint does not contain reset credits.
+      void loadResetCredits();
     } finally {
       setIsRefreshing(false);
     }
@@ -219,37 +223,41 @@ export function AccountCard({
     account.auth_mode === "chat_g_p_t" && account.plan_type?.toLowerCase() !== "free";
   const subscriptionStatus = getSubscriptionStatus(account.subscription_expires_at);
   const compactResetCredits = !account.is_active;
-  const hasResetCredits = getAvailableResetCredits(resetCredits).length > 0;
+  const hasResetCredits = getResetCreditsDisplayCount(resetCredits) > 0;
 
   const loadResetCredits = useCallback(async () => {
     const requestId = ++resetRequestSeq.current;
 
     if (account.auth_mode !== "chat_g_p_t") {
       setResetCredits(null);
+      setResetCreditsError(false);
       return;
     }
 
+    setResetCreditsLoading(true);
     try {
-      const stats = await invokeBackend<AccountUsageStatsInfo>("get_account_usage_stats", {
+      // Fetch resets independently: profile usage stats may be unavailable or
+      // disabled even when the account has valid, unspent reset credits.
+      const credits = await invokeBackend<AccountResetCredits>("get_account_reset_credits", {
         accountId: account.id,
       });
       if (requestId !== resetRequestSeq.current) return;
-      setResetCredits(stats.account_id === account.id ? stats.reset_credits : null);
-    } catch {
+      setResetCredits(credits);
+      setResetCreditsError(false);
+    } catch (error) {
       if (requestId !== resetRequestSeq.current) return;
-      setResetCredits(null);
+      console.warn("Could not refresh reset credits:", error);
+      // Do not erase a known successful result on a transient API failure.
+      // The badge may be stale until the next successful check.
+      setResetCreditsError(true);
+    } finally {
+      if (requestId === resetRequestSeq.current) setResetCreditsLoading(false);
     }
   }, [account.auth_mode, account.id]);
 
-  const handleStatsLoaded = useCallback(
-    (stats: AccountUsageStatsInfo | null) => {
-      setResetCredits(stats?.account_id === account.id ? stats.reset_credits : null);
-    },
-    [account.id]
-  );
-
   useEffect(() => {
     setResetCredits(null);
+    setResetCreditsError(false);
 
     void loadResetCredits();
     const timer = window.setInterval(() => {
@@ -262,6 +270,12 @@ export function AccountCard({
     };
   }, [loadResetCredits]);
 
+  // Retry transient failures sooner than the six-hour periodic refresh.
+  useEffect(() => {
+    if (!resetCreditsError) return;
+    const timer = window.setTimeout(() => void loadResetCredits(), 5 * 60 * 1000);
+    return () => window.clearTimeout(timer);
+  }, [loadResetCredits, resetCreditsError]);
 
   return (
     <div
@@ -350,12 +364,23 @@ export function AccountCard({
           </p>
         )}
         {hasResetCredits && (
-          <div className="mt-1 flex min-w-0 justify-end">
+          <div className="mt-1 flex min-w-0 justify-end" title={resetCreditsError ? "Last known resets. Refresh failed; retrying soon." : undefined}>
             <ResetCreditsMenu
               compact={compactResetCredits}
               resetCredits={resetCredits}
             />
           </div>
+        )}
+        {resetCreditsError && (
+          <button
+            type="button"
+            onClick={() => void loadResetCredits()}
+            disabled={resetCreditsLoading}
+            title="Reset credits could not be checked. This does not mean your resets are gone."
+            className="mt-1 self-end text-[11px] text-amber-700 underline decoration-dotted hover:text-amber-900 disabled:opacity-50 dark:text-amber-300"
+          >
+            {resetCreditsLoading ? "Checking resets…" : hasResetCredits ? "Reset count not verified · Retry" : "Resets unavailable · Retry"}
+          </button>
         )}
       </div>
 
@@ -485,8 +510,7 @@ export function AccountCard({
         open={statsOpen}
         usage={account.usage}
         usageLoading={account.usageLoading}
-        onStatsLoaded={handleStatsLoaded}
-      />
+       />
     </div>
   );
 }
