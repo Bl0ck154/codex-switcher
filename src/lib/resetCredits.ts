@@ -33,6 +33,19 @@ export function getAvailableResetCredits(
     .map(({ credit }) => credit);
 }
 
+/** The API may report an available count without returning credit details.
+ * Do not hide confirmed resets merely because their expiry rows are missing.
+ */
+export function getResetCreditsDisplayCount(
+  resetCredits: AccountResetCredits | null,
+  now = Date.now(),
+): number {
+  if (!resetCredits) return 0;
+  const reported = resetCredits.available_count;
+  const reportedCount = Number.isFinite(reported) ? Math.max(0, Math.floor(reported)) : 0;
+  return Math.max(reportedCount, getAvailableResetCredits(resetCredits, now).length);
+}
+
 export function formatResetCreditDateTime(
   expiresAt: string | null,
   options: ResetCreditDateTimeFormatOptions = {},
