@@ -293,12 +293,17 @@ export function useAccounts() {
     async (accountId: string, expectedActiveId?: string) => {
       try {
         await invokeBackend(expectedActiveId ? "switch_account_if_current" : "switch_account", { accountId, ...(expectedActiveId ? { expectedActiveId } : {}) });
-        await loadAccounts(true); // Preserve usage data
+        await loadAccounts(true); // Preserve existing usage while updating account state.
+        // A successful switch may have been preceded by an old usage/auth error.
+        // Refresh that account without delaying the completed switch.
+        void refreshSingleUsage(accountId).catch((error) => {
+          console.warn("Failed to refresh usage after switching:", error);
+        });
       } catch (err) {
         throw err;
       }
     },
-    [loadAccounts]
+    [loadAccounts, refreshSingleUsage]
   );
 
   const deleteAccount = useCallback(
