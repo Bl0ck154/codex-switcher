@@ -33,6 +33,33 @@ export function getAvailableResetCredits(
     .map(({ credit }) => credit);
 }
 
+/** The API may report an available count without returning credit details.
+ * Do not hide confirmed resets merely because their expiry rows are missing.
+ */
+export function getResetCreditsDisplayCount(
+  resetCredits: AccountResetCredits | null,
+  now = Date.now(),
+): number {
+  if (!resetCredits) return 0;
+  const reported = resetCredits.available_count;
+  const reportedCount = Number.isFinite(reported) ? Math.max(0, Math.floor(reported)) : 0;
+  return Math.max(reportedCount, getAvailableResetCredits(resetCredits, now).length);
+}
+
+// Account cards mount together, but the backend can only rotate one OAuth
+// session at a time. Serialize independent reset-credit checks to avoid
+// reporting transient "Background OAuth refresh busy" as missing credits.
+let resetCreditsQueue: Promise<void> = Promise.resolve();
+
+export function queueResetCreditsCheck<T>(request: () => Promise<T>): Promise<T> {
+  const next = resetCreditsQueue.then(request);
+  resetCreditsQueue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
 export function formatResetCreditDateTime(
   expiresAt: string | null,
   options: ResetCreditDateTimeFormatOptions = {},

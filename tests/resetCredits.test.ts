@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   formatResetCreditDateTime,
   getAvailableResetCredits,
+  getResetCreditsDisplayCount,
+  queueResetCreditsCheck,
 } from "../src/lib/resetCredits.ts";
 import type { AccountResetCredit, AccountResetCredits } from "../src/types/index.ts";
 
@@ -66,4 +68,53 @@ test("reset expiry includes both date and local time", () => {
 test("missing and malformed expiry values remain visible", () => {
   assert.equal(formatResetCreditDateTime(null), "No expiry");
   assert.equal(formatResetCreditDateTime("not-a-date"), "Expiry unavailable");
+});
+
+test("reported available resets stay visible even if the API omits credit rows", () => {
+  const resets: AccountResetCredits = {
+    available_count: 2,
+    next_expires_at: "2026-12-01T00:00:00Z",
+    credits: [],
+  };
+  assert.deepEqual(getAvailableResetCredits(resets), []);
+  assert.equal(getResetCreditsDisplayCount(resets), 2);
+});
+
+test("reported count fills missing details without double-counting known resets", () => {
+  const now = new Date("2026-11-03T10:00:00Z").getTime();
+  const resets: AccountResetCredits = {
+    available_count: 2,
+    next_expires_at: null,
+    credits: [
+      credit("known", "available", "2026-12-01T10:00:00Z"),
+      credit("redeemed", "redeemed", "2026-12-01T10:00:00Z"),
+    ],
+  };
+  assert.equal(getResetCreditsDisplayCount(resets, now), 2);
+  assert.equal(getResetCreditsDisplayCount({ ...resets, available_count: 0 }, now), 1);
+  assert.equal(getResetCreditsDisplayCount(null, now), 0);
+});
+
+test("reset checks are serialized even if a prior account request fails", async () => {
+  const started: string[] = [];
+  let releaseFirst: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+
+  const first = queueResetCreditsCheck(async () => {
+    started.push("first");
+    await gate;
+    throw new Error("Transient OAuth lock");
+  });
+  const second = queueResetCreditsCheck(async () => {
+    started.push("second");
+    return "available";
+  });
+
+  // The second account must not begin while the first still holds the queue.
+  await Promise.resolve();
+  assert.deepEqual(started, ["first"]);
+  releaseFirst?.();
+  await assert.rejects(first, /Transient OAuth lock/);
+  assert.equal(await second, "available");
+  assert.deepEqual(started, ["first", "second"]);
 });
