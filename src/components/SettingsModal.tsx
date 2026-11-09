@@ -18,6 +18,8 @@ interface SettingsModalProps {
   onClosePreferenceChange: (value: CodexClosePreference) => void;
   autoSwitchEnabled: boolean;
   onAutoSwitchEnabledChange: (value: boolean) => void;
+  autoResumeSessions: boolean;
+  onAutoResumeSessionsChange: (value: boolean) => void;
   onClose: () => void;
 }
 
@@ -28,6 +30,8 @@ export function SettingsModal({
   onClosePreferenceChange,
   autoSwitchEnabled,
   onAutoSwitchEnabledChange,
+  autoResumeSessions,
+  onAutoResumeSessionsChange,
   onClose,
 }: SettingsModalProps) {
   const [displaySettings, setDisplaySettings] = useState<DisplaySettings | null>(null);
@@ -195,6 +199,18 @@ export function SettingsModal({
           </label>
           <p className="text-sm text-gray-500 dark:text-gray-400">
             While Switcher is running, check once a minute and use the next saved ChatGPT account with confirmed quota. Automatically close and reopen Codex, even if manual reopening is off. Use graceful closing unless force close is selected above; unsaved work may be lost. Pause five minutes after a switch or error.
+          </p>
+          <label className="flex items-center gap-2 text-sm font-medium text-gray-900 dark:text-gray-100">
+            <input
+              type="checkbox"
+              checked={autoResumeSessions}
+              onChange={(event) => onAutoResumeSessionsChange(event.target.checked)}
+              className="h-4 w-4 accent-orange-600"
+            />
+            Auto-resume interrupted conversations after switching
+          </label>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            With desktop reopening enabled, continue recent quota-stopped conversations after switching. On macOS, also continue running chats interrupted by the restart. Finished chats and chats waiting for input are left alone. Switcher checks that each continuation starts.
           </p>
         </div>
         <div className="flex justify-end p-5 border-t border-gray-100 dark:border-gray-800">

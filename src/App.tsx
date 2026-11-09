@@ -4,6 +4,7 @@ import { AUTO_SWITCH_STORAGE_KEY, readAutoSwitchEnabled } from "./lib/quotaAutoS
 import { useAccounts } from "./hooks/useAccounts";
 import { useDesktopReopen } from "./hooks/useDesktopReopen";
 import { useCodexClosePreference } from "./hooks/useCodexClosePreference";
+import { SessionRecoveryPanel } from "./components/SessionRecoveryPanel";
 import { SettingsModal } from "./components/SettingsModal";
 import { finishForceClose, type DesktopReopenPreference } from "./lib/desktopReopen";
 import type { CodexClosePreference } from "./lib/codexClosePreference";
@@ -45,6 +46,7 @@ import {
   type AutoWarmupWindowKind,
 } from "./lib/autoWarmupPolicy";
 import { getTauriWindow } from "./lib/tauriWindow";
+import { readAutoResumeSessions, writeAutoResumeSessions, type RecoveryState, type RecoveryProgress, type RecoveryReport } from "./lib/sessionRecovery";
 import "./App.css";
 
 const AUTO_WARMUP_CHECK_INTERVAL_MS = 30 * 1000;
@@ -257,6 +259,8 @@ function App() {
   const [autoSwitchEnabled, setAutoSwitchEnabled] = useState(readAutoSwitchEnabled);
   const autoSwitchEnabledRef = useRef(autoSwitchEnabled);
   autoSwitchEnabledRef.current = autoSwitchEnabled;
+  const [autoResumeSessions, setAutoResumeSessions] = useState(() => readAutoResumeSessions());
+  const [recoveryState, setRecoveryState] = useState<RecoveryState | null>(null);
   const [isCompletingForceClose, setIsCompletingForceClose] = useState(false);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const forceCloseInFlightRef = useRef(false);
@@ -785,6 +789,15 @@ function App() {
     [closeBehaviorDontAskAgain, formatWarmupError, showWarmupToast]
   );
 
+  const saveAutoResumeSessions = (enabled: boolean) => {
+    try {
+      writeAutoResumeSessions(enabled);
+      setAutoResumeSessions(enabled);
+    } catch (err) {
+      showWarmupToast(`Could not save auto-resume preference: ${formatWarmupError(err)}`, true);
+    }
+  };
+
   const handleForceCloseConfirm = async (automatic?: { accountId: string; sourceId: string }) => {
     if (forceCloseInFlightRef.current || (!automatic && desktopReopen.checking)) {
       if (automatic) throw new Error("Another close or switch is in progress");
@@ -794,9 +807,13 @@ function App() {
     const accountId = automatic?.accountId ?? pendingSwitchAccountId;
     const shouldReopen = !!automatic || (desktopReopen.available && desktopReopen.reopen);
     const forceClose = automatic ? codexClose.preference === "force" : codexClose.forceClose;
+    let preparedRecoveryCount = 0;
     let reopened = false;
     setIsCompletingForceClose(true);
     try {
+      if (accountId && autoResumeSessions && shouldReopen) {
+        preparedRecoveryCount = await invokeBackend<number>("prepare_codex_session_recovery");
+      }
       if (!automatic) {
         try {
           desktopReopen.rememberSelection();
@@ -816,6 +833,9 @@ function App() {
       }
       const result = await closeCodexProcesses(shouldReopen, forceClose);
       if (!result?.processInfo?.can_switch) {
+        if (preparedRecoveryCount > 0) {
+          await invokeBackend("cancel_codex_session_recovery").catch(() => undefined);
+        }
         if (automatic) throw new Error("Could not close Codex; no account switch was made");
         return;
       }
@@ -843,10 +863,33 @@ function App() {
         },
       );
       if (automatic && !reopened) throw new Error("Account switched, but Codex did not reopen; open Codex manually");
+      if (preparedRecoveryCount > 0 && reopened) {
+        setRecoveryState({ status: "running", progress: { completed: 0, total: preparedRecoveryCount, current_session_id: null } });
+        let acceptingProgress = true;
+        try {
+          const { Channel } = await import("@tauri-apps/api/core");
+          const onProgress = new Channel<RecoveryProgress>((progress) => {
+            if (acceptingProgress) setRecoveryState({ status: "running", progress });
+          });
+          const report = await invokeBackend<RecoveryReport>("resume_codex_session_recovery", { onProgress });
+          acceptingProgress = false;
+          setRecoveryState({ status: "complete", report });
+        } catch (err) {
+          acceptingProgress = false;
+          setRecoveryState({ status: "error", message: `Account switched, but auto-resume failed: ${formatWarmupError(err)}` });
+        }
+      } else if (preparedRecoveryCount > 0) {
+        await invokeBackend("cancel_codex_session_recovery").catch(() => undefined);
+      } else if (accountId && autoResumeSessions && reopened) {
+        setRecoveryState({ status: "complete", report: { resumed: [], skipped: [], failed: [], timed_out: false } });
+      }
       if (shouldReopen && !result.reopenToken) {
         showWarmupToast("No closed desktop app could be identified for reopening. Open Codex manually.", true);
       }
     } catch (err) {
+      if (preparedRecoveryCount > 0) {
+        await invokeBackend("cancel_codex_session_recovery").catch(() => undefined);
+      }
       console.error("Failed to switch account after closing Codex:", err);
       showWarmupToast(`Switch failed after closing Codex: ${formatWarmupError(err)}`, true);
       if (automatic) throw err;
@@ -1832,6 +1875,9 @@ function App() {
             <p role="status" className="mt-2 text-gray-600 dark:text-gray-300">{autoSwitcher.status}</p>
           </section>
         )}
+        {recoveryState && (
+          <SessionRecoveryPanel state={recoveryState} onDismiss={() => setRecoveryState(null)} />
+        )}
         {loading && accounts.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20">
             <div className="animate-spin h-10 w-10 border-2 border-gray-900 dark:border-gray-100 border-t-transparent rounded-full mb-4"></div>
@@ -2100,19 +2146,21 @@ function App() {
           onClosePreferenceChange={saveCodexClosePreference}
           autoSwitchEnabled={autoSwitchEnabled}
           onAutoSwitchEnabledChange={saveAutoSwitchEnabled}
+          autoResumeSessions={autoResumeSessions}
+          onAutoResumeSessionsChange={saveAutoResumeSessions}
           onClose={() => setIsSettingsOpen(false)}
         />
       )}
 
       {forceCloseConfirmOpen && (
         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl w-full max-w-md mx-4 shadow-xl">
+          <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl w-full max-w-md max-h-[calc(100dvh-2rem)] flex flex-col mx-4 shadow-xl">
             <div className="p-5 border-b border-gray-100 dark:border-gray-800">
               <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
                 Close running Codex processes?
               </h2>
             </div>
-            <div className="p-5 space-y-3">
+            <div className="p-5 space-y-3 overflow-y-auto">
               <p className="text-sm text-gray-600 dark:text-gray-300">
                 This will {codexClose.forceClose ? "force close" : "gracefully close"} {processInfo?.count ?? 0} Codex process
                 {(processInfo?.count ?? 0) === 1 ? "" : "es"} that currently{" "}
@@ -2176,11 +2224,34 @@ function App() {
                   <p className="text-sm text-gray-500 dark:text-gray-400">No supported desktop app could be identified for reopening. Codex will only be closed.</p>
                 )}
               </div>
+              {pendingSwitchAccount && (
+                <div className="space-y-2 rounded-lg bg-gray-50 dark:bg-gray-800 p-3">
+                  <label className="flex items-start gap-2 text-sm font-medium text-gray-900 dark:text-gray-100">
+                    <input
+                      type="checkbox"
+                      checked={autoResumeSessions}
+                      onChange={(event) => saveAutoResumeSessions(event.target.checked)}
+                      disabled={isCompletingForceClose || desktopReopen.checking || !desktopReopen.available || !desktopReopen.reopen}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-orange-600 disabled:opacity-50"
+                    />
+                    Auto-resume interrupted conversations after switching
+                  </label>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">
+                    {desktopReopen.checking
+                      ? "Checking whether Codex desktop can reopen…"
+                      : !desktopReopen.available
+                        ? "Requires a supported Codex desktop app to reopen."
+                        : !desktopReopen.reopen
+                          ? "Enable desktop reopening to auto-resume conversations. You can change this in Settings."
+                          : "Continue quota-stopped chats and, on macOS, running chats interrupted by the restart. This preference is saved in Settings."}
+                  </p>
+                </div>
+              )}
               {codexClose.forceClose && (
                 <p className="text-sm text-red-600 dark:text-red-300">Unsaved Codex work may be lost.</p>
               )}
             </div>
-            <div className="flex justify-end gap-3 p-5 border-t border-gray-100 dark:border-gray-800">
+            <div className="flex shrink-0 justify-end gap-3 p-5 border-t border-gray-100 dark:border-gray-800">
               <button
                 onClick={() => {
                   setPendingSwitchAccountId(null);
