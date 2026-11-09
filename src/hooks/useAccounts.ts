@@ -293,7 +293,9 @@ export function useAccounts() {
     async (accountId: string) => {
       try {
         await invokeBackend("delete_account", { accountId });
-        await loadAccounts();
+        // Account activation can change while deletion is in flight. Re-read
+        // backend metadata without discarding the latest cached usage.
+        await loadAccounts(true);
       } catch (err) {
         throw err;
       }

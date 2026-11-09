@@ -68,8 +68,16 @@ pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson)
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
-    let home = dirs::home_dir().context("Could not find home directory")?;
-    Ok(home.join(".codex-switcher"))
+    #[cfg(test)]
+    {
+        Ok(super::test_support::home_dir()?.join(".codex-switcher"))
+    }
+
+    #[cfg(not(test))]
+    {
+        let home = dirs::home_dir().context("Could not find home directory")?;
+        Ok(home.join(".codex-switcher"))
+    }
 }
 
 /// Get the path to accounts.json
@@ -354,20 +362,19 @@ pub fn mutate_accounts<T>(mutate: impl FnOnce(&mut AccountsStore) -> Result<T>) 
 
 /// Add a new account to the store
 pub fn add_account(account: StoredAccount) -> Result<StoredAccount> {
-    mutate_accounts(|store| {
-        if store.accounts.iter().any(|a| a.name == account.name) {
-            anyhow::bail!("An account with name '{}' already exists", account.name);
-        }
+    mutate_accounts(|store| add_account_to_store(store, account))
+}
 
-        let account_clone = account.clone();
-        store.accounts.push(account);
-
-        if store.accounts.len() == 1 {
-            store.active_account_id = Some(account_clone.id.clone());
-        }
-
-        Ok(account_clone)
-    })
+fn add_account_to_store(
+    store: &mut AccountsStore,
+    account: StoredAccount,
+) -> Result<StoredAccount> {
+    if store.accounts.iter().any(|a| a.name == account.name) {
+        anyhow::bail!("An account with name '{}' already exists", account.name);
+    }
+    let stored = account.clone();
+    store.accounts.push(account);
+    Ok(stored)
 }
 
 /// Remove an account by ID
@@ -535,8 +542,8 @@ pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        acquire_mutation_lock_at, sync_active_account_tokens, write_file_atomic,
-        write_file_atomic_with_pre_replace,
+        acquire_mutation_lock_at, add_account_to_store, sync_active_account_tokens,
+        write_file_atomic, write_file_atomic_with_pre_replace,
     };
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::Engine;
@@ -676,6 +683,32 @@ mod tests {
             format!(r#"{{"https://api.openai.com/auth":{{"chatgpt_account_id":"{account_id}"}}}}"#);
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
         format!("header.{encoded}.{suffix}")
+    }
+
+    #[test]
+    fn adding_account_does_not_change_the_active_account() {
+        let active = StoredAccount::new_api_key("A".into(), "sk-a".into());
+        let active_id = active.id.clone();
+        let stores = [
+            AccountsStore::default(),
+            AccountsStore {
+                accounts: vec![active],
+                active_account_id: Some(active_id),
+                ..AccountsStore::default()
+            },
+        ];
+
+        for mut store in stores {
+            let expected_active_id = store.active_account_id.clone();
+
+            add_account_to_store(
+                &mut store,
+                StoredAccount::new_api_key("B".into(), "sk-b".into()),
+            )
+            .unwrap();
+
+            assert_eq!(store.active_account_id, expected_active_id);
+        }
     }
 
     #[test]
