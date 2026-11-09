@@ -19,8 +19,8 @@ use commands::{
     import_accounts_slim_text, kill_codex_processes, list_accounts,
     open_codex_recovery_conversation, open_main_window, prepare_codex_session_recovery, quit_app,
     refresh_account_metadata, refresh_all_accounts_usage, rename_account, report_usage,
-    resume_codex_session_recovery, set_dock_display_mode,
-    set_masked_account_ids, start_login, switch_account, warmup_account, warmup_all_accounts,
+    resume_codex_session_recovery, set_dock_display_mode, set_masked_account_ids, start_login,
+    switch_account, warmup_account, warmup_all_accounts,
 };
 use tauri::Emitter;
 
