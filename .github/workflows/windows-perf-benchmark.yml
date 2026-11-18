@@ -1,0 +1,27 @@
+name: Windows performance benchmark tools
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/windows-perf-lib.ps1'
+      - 'scripts/benchmark-windows.ps1'
+      - 'scripts/compare-windows-benchmarks.ps1'
+      - 'scripts/tests/windows-perf.Tests.ps1'
+      - '.github/workflows/windows-perf-benchmark.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  powershell-regressions:
+    name: PowerShell 5.1 and 7
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Windows PowerShell 5.1
+        shell: powershell
+        run: .\scripts\tests\windows-perf.Tests.ps1
+      - name: PowerShell 7
+        shell: pwsh
+        run: .\scripts\tests\windows-perf.Tests.ps1

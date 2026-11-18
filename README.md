@@ -103,6 +103,10 @@ pnpm tauri build
 
 The built application will be in `src-tauri/target/release/bundle/`.
 
+### Windows RAM / CPU Benchmark
+
+For reproducible Windows process-tree memory and CPU measurement (including WebView2, tray and idle), before/after reports, and tests, see [Windows performance benchmark](docs/windows-performance-benchmark.md). It uses read-only PowerShell tools and does not change account data.
+
 ### Run the Dashboard in a Browser
 
 You can also serve the built dashboard over HTTP instead of opening the Tauri shell.
