@@ -4,10 +4,13 @@ import type { AccountUsageStats } from "../types";
 export class AccountStatsCache {
   private readonly records = new Map<string, { stats: AccountUsageStats; savedAt: number }>();
 
-  constructor(
-    private readonly maxEntries = 12,
-    private readonly ttlMs = 5 * 60_000,
-  ) {}
+  private readonly maxEntries: number;
+  private readonly ttlMs: number;
+
+  constructor(maxEntries = 12, ttlMs = 5 * 60_000) {
+    this.maxEntries = maxEntries;
+    this.ttlMs = ttlMs;
+  }
 
   get(accountId: string, now = Date.now()): AccountUsageStats | null {
     const record = this.records.get(accountId);
