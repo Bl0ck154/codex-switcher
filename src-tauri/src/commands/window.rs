@@ -54,7 +54,10 @@ pub fn open_main_window(app: AppHandle) {
 
 pub fn hide_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.hide();
+        if window.hide().is_ok() {
+            #[cfg(target_os = "windows")]
+            crate::tray::main_window_memory_target(app, true);
+        }
     }
     #[cfg(target_os = "macos")]
     let _ = app.hide();
@@ -93,6 +96,8 @@ pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>) {
         }
     }
     if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "windows")]
+        crate::tray::main_window_memory_target(app, false);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
