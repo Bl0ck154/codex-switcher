@@ -570,27 +570,41 @@ mod tests {
         let cache = RequestCache::default();
         let a = account("token-a");
         cache
-            .get_or_fetch(&a, Endpoint::Usage, USAGE_TTL, |_| true, || async {
-                Ok::<_, anyhow::Error>(1usize)
-            })
+            .get_or_fetch(
+                &a,
+                Endpoint::Usage,
+                USAGE_TTL,
+                |_| true,
+                || async { Ok::<_, anyhow::Error>(1usize) },
+            )
             .await
             .unwrap();
         let guard = cache.begin_critical_switch();
         let calls = AtomicUsize::new(0);
         let result = cache
-            .get_or_fetch(&a, Endpoint::Usage, USAGE_TTL, |_| true, || async {
-                calls.fetch_add(1, Ordering::SeqCst);
-                Ok::<_, anyhow::Error>(2usize)
-            })
+            .get_or_fetch(
+                &a,
+                Endpoint::Usage,
+                USAGE_TTL,
+                |_| true,
+                || async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    Ok::<_, anyhow::Error>(2usize)
+                },
+            )
             .await;
         assert!(result.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         drop(guard);
         assert_eq!(
             cache
-                .get_or_fetch(&a, Endpoint::Usage, USAGE_TTL, |_| true, || async {
-                    Ok::<_, anyhow::Error>(3usize)
-                })
+                .get_or_fetch(
+                    &a,
+                    Endpoint::Usage,
+                    USAGE_TTL,
+                    |_| true,
+                    || async { Ok::<_, anyhow::Error>(3usize) }
+                )
                 .await
                 .unwrap(),
             3
@@ -633,5 +647,4 @@ mod tests {
         assert!(cache.state().metadata.len() <= MAX_ENTRIES);
         assert!(cache.metrics().cache_bytes_estimate < MAX_CACHE_BYTES);
     }
-
 }
