@@ -50,7 +50,7 @@ function Get-PerfUserDataDir {
     param([AllowNull()][string]$CommandLine)
     if ([string]::IsNullOrWhiteSpace($CommandLine)) { return $null }
     if ($CommandLine -match '--user-data-dir=(?:"([^"]+)"|(\S+))') {
-        $value = if ($Matches[1]) { $Matches[1] } else { $Matches[2].Trim('"') }
+        $value = if ($Matches.ContainsKey('1') -and $Matches['1']) { $Matches['1'] } else { $Matches['2'].Trim('"') }
         return $value.TrimEnd('\', '/').ToLowerInvariant()
     }
     return $null
