@@ -737,7 +737,7 @@ fn is_windows_codex_cli_session(process: &WindowsCodexProcess) -> bool {
         && !path.contains("\\resources\\")
         && !path.contains("\\windowsapps\\")
         && !path.contains("\\programs\\codex\\")
-        && !path.contains("\\openai\\codex\\bin\\codex.exe")
+
 }
 
 #[cfg(any(windows, test))]
