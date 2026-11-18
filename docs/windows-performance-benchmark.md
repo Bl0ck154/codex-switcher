@@ -4,7 +4,7 @@ This is a read-only tool for Windows PowerShell 5.1+ and PowerShell 7+. It measu
 
 ## Important facts and metric semantics
 
-In src-tauri/src/tray.rs the application creates a second hidden WebviewWindow for its tray popup **at startup**. Closing/hiding the main window does not necessarily terminate WebView2. The main window config in src-tauri/tauri.conf.json sets backgroundThrottling to disabled. These are plausible optimization targets, **not demonstrated leaks**.
+**Historical baseline (before PR #54):** Windows created a second hidden tray WebView at startup and retained it. **Current code (after PR #54):** the Windows tray WebView is created on demand and released after a hidden idle period; hidden/minimized WebViews receive best-effort LOW memory hints. The main WebView remains alive because background account features still depend on React. These are verified code changes, **not measured memory savings or evidence of a leak**. Compare the pre-optimization installed binary to a separately built post-optimization binary; checking out new source does not change an already installed executable.
 
 * **Private Bytes** (Get-Process PrivateMemorySize64): committed private virtual memory. Additive across processes, but **not unique physical RAM**.
 * **Working Set** (WorkingSet64): resident pages for each process. The **sum can double-count shared physical pages** between different processes. Reports name this aggregate WS-sum, not physical RAM.
