@@ -11,12 +11,10 @@ use windows_sys::Win32::Foundation::{
     CloseHandle, HANDLE, HWND, INVALID_HANDLE_VALUE, LPARAM, WAIT_TIMEOUT,
 };
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
-    TH32CS_SNAPPROCESS,
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
@@ -61,7 +59,10 @@ impl Drop for OwnedHandle {
 }
 
 fn utf16_z(units: &[u16]) -> String {
-    let len = units.iter().position(|unit| *unit == 0).unwrap_or(units.len());
+    let len = units
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(units.len());
     String::from_utf16_lossy(&units[..len])
 }
 
@@ -79,9 +80,7 @@ fn candidates() -> anyhow::Result<Vec<(u32, u32, String)>> {
     }
     loop {
         let name = utf16_z(&entry.szExeFile);
-        if name.eq_ignore_ascii_case("codex.exe")
-            || name.eq_ignore_ascii_case("chatgpt.exe")
-        {
+        if name.eq_ignore_ascii_case("codex.exe") || name.eq_ignore_ascii_case("chatgpt.exe") {
             found.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
         }
         if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
@@ -130,7 +129,11 @@ fn window_titles() -> anyhow::Result<HashMap<u32, String>> {
 
 fn open_query_process(pid: u32) -> anyhow::Result<Option<OwnedHandle>> {
     let handle = unsafe {
-        OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS, 0, pid)
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE_ACCESS,
+            0,
+            pid,
+        )
     };
     if handle.is_null() {
         let err = io::Error::last_os_error();
@@ -185,7 +188,10 @@ fn command_line(handle: HANDLE) -> anyhow::Result<String> {
                 &mut required,
             )
         };
-        if matches!(status, STATUS_INFO_LENGTH_MISMATCH | STATUS_BUFFER_TOO_SMALL | STATUS_BUFFER_OVERFLOW) {
+        if matches!(
+            status,
+            STATUS_INFO_LENGTH_MISMATCH | STATUS_BUFFER_TOO_SMALL | STATUS_BUFFER_OVERFLOW
+        ) {
             requested = (required as usize).max(capacity * 2);
             continue;
         }
@@ -196,7 +202,9 @@ fn command_line(handle: HANDLE) -> anyhow::Result<String> {
         let len = response.length as usize;
         let base = storage.as_ptr() as usize;
         let start = response.buffer as usize;
-        let end = start.checked_add(len).context("Command line length overflow")?;
+        let end = start
+            .checked_add(len)
+            .context("Command line length overflow")?;
         if len % 2 != 0
             || len > response.maximum_length as usize
             || start < base
@@ -232,7 +240,11 @@ pub(super) fn read() -> anyhow::Result<Vec<WindowsCodexProcess>> {
             }
             Err(error) => return Err(error),
         };
-        if !path.rsplit(['\\', '/']).next().is_some_and(|actual| actual.eq_ignore_ascii_case(&name)) {
+        if !path
+            .rsplit(['\\', '/'])
+            .next()
+            .is_some_and(|actual| actual.eq_ignore_ascii_case(&name))
+        {
             continue; // PID reused for a different executable.
         }
         // Unrelated ChatGPT desktop installations share the executable name.

@@ -737,7 +737,6 @@ fn is_windows_codex_cli_session(process: &WindowsCodexProcess) -> bool {
         && !path.contains("\\resources\\")
         && !path.contains("\\windowsapps\\")
         && !path.contains("\\programs\\codex\\")
-
 }
 
 #[cfg(test)]
@@ -1100,13 +1099,17 @@ mod tests {
     #[test]
     fn windows_interactive_cli_blocks_switch_but_managed_daemon_does_not() {
         let cli = windows_process(
-            "codex.exe", 301, 1,
+            "codex.exe",
+            301,
+            1,
             r"C:\Users\test\.cargo\bin\codex.exe",
             r#""C:\Users\test\.cargo\bin\codex.exe" --model o3 -C C:\dev\codex-switcher"#,
             "",
         );
         let daemon = windows_process(
-            "codex.exe", 302, 1,
+            "codex.exe",
+            302,
+            1,
             r"C:\Users\test\.cargo\bin\codex.exe",
             r#""C:\Users\test\.cargo\bin\codex.exe" app-server --managed-daemon"#,
             "",

@@ -224,7 +224,8 @@ async fn switch_account_checked(
     // auth.json changes; the next CLI session starts a new daemon.
     // Resolve on the auth-operation thread: tests isolate Codex homes per thread.
     let daemon_home = crate::auth::get_codex_home().map_err(|e| e.to_string())?;
-    let daemon_stop = tokio::task::spawn_blocking(move || stop_cli_daemon_if_running(daemon_home)).await;
+    let daemon_stop =
+        tokio::task::spawn_blocking(move || stop_cli_daemon_if_running(daemon_home)).await;
     if let Err(err) = daemon_stop
         .map_err(anyhow::Error::from)
         .and_then(|stopped| stopped)
@@ -232,7 +233,9 @@ async fn switch_account_checked(
         // On Windows the daemon must not retain the previous account's tokens.
         // Unix retains its existing best-effort stop policy.
         #[cfg(windows)]
-        return Err(format!("Cannot switch: Codex CLI daemon could not be stopped: {err:#}"));
+        return Err(format!(
+            "Cannot switch: Codex CLI daemon could not be stopped: {err:#}"
+        ));
         #[cfg(not(windows))]
         println!("[Account] Failed to stop the Codex CLI daemon: {err:#}");
     }
