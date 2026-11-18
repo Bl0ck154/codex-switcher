@@ -9,6 +9,10 @@ pub mod commands;
 pub mod tray;
 pub mod types;
 pub mod web;
+#[cfg(target_os = "windows")]
+pub mod windows_background;
+#[cfg(target_os = "windows")]
+pub mod windows_hibernate;
 
 use commands::{
     ack_close_behavior_prompt, add_account_from_file, cancel_codex_session_recovery, cancel_login,
@@ -37,6 +41,8 @@ pub fn run() {
                     .plugin(tauri_plugin_updater::Builder::new().build())?;
                 app_menu::setup(app.handle())?;
                 tray::setup(app.handle())?;
+                #[cfg(target_os = "windows")]
+                windows_background::setup(app.handle().clone());
             }
             Ok(())
         })
@@ -116,6 +122,9 @@ pub fn run() {
             open_main_window,
             quit_app,
             report_usage,
+            commands::report_main_hibernation_state,
+            commands::sync_windows_warmup_settings,
+            commands::set_windows_auto_warmup_all,
             get_dock_display_mode,
             set_dock_display_mode,
             complete_close_behavior,
@@ -124,6 +133,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
+            #[cfg(target_os = "windows")]
+            if let tauri::RunEvent::ExitRequested { api, .. } = _event {
+                // Releasing the last WebView2 must not exit the native tray.
+                // Explicit Quit calls AppHandle::exit.
+                if _app.tray_by_id(crate::tray::TRAY_ID).is_some() {
+                    api.prevent_exit();
+                }
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _event {
                 commands::restore_main_window(_app);

@@ -46,6 +46,68 @@ pub fn hide_tray_window(app: AppHandle) {
     }
 }
 
+/// Persist the React warm-up settings and reconcile the native ledger.
+#[tauri::command]
+pub async fn sync_windows_warmup_settings(
+    auto_switch_enabled: bool,
+    auto_warmup_all_enabled: bool,
+    auto_warmup_account_ids: Vec<String>,
+    auto_warmup_ledger: std::collections::HashMap<String, crate::types::NativeWarmupHistory>,
+    timed_warmup_enabled: bool,
+    timed_warmup_times: Vec<String>,
+    timed_warmup_ledger: std::collections::HashMap<String, String>,
+) -> Result<crate::types::NativeBackgroundWarmup, String> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows_background::sync_from_frontend(
+            auto_switch_enabled,
+            auto_warmup_all_enabled,
+            auto_warmup_account_ids,
+            auto_warmup_ledger,
+            timed_warmup_enabled,
+            timed_warmup_times,
+            timed_warmup_ledger,
+        )
+        .await
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (
+            auto_switch_enabled,
+            auto_warmup_all_enabled,
+            auto_warmup_account_ids,
+            auto_warmup_ledger,
+            timed_warmup_enabled,
+            timed_warmup_times,
+            timed_warmup_ledger,
+        );
+        Ok(crate::types::NativeBackgroundWarmup::default())
+    }
+}
+
+/// Update the background scheduler directly from the tray popup.
+#[tauri::command]
+pub async fn set_windows_auto_warmup_all(enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows_background::change_all_enabled(enabled).await
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = enabled;
+        Ok(())
+    }
+}
+
+/// A positive handshake only when no React background work requires this WebView.
+#[tauri::command]
+pub fn report_main_hibernation_state(app: AppHandle, idle: bool) {
+    #[cfg(target_os = "windows")]
+    crate::windows_hibernate::report_frontend_idle(&app, idle);
+    #[cfg(not(target_os = "windows"))]
+    let _ = (app, idle);
+}
+
 /// Bring the main window to the foreground and hide the tray popup.
 #[tauri::command]
 pub fn open_main_window(app: AppHandle) {
@@ -57,6 +119,8 @@ pub fn hide_main_window<R: Runtime>(app: &AppHandle<R>) {
         if window.hide().is_ok() {
             #[cfg(target_os = "windows")]
             crate::tray::main_window_memory_target(app, true);
+            #[cfg(target_os = "windows")]
+            crate::windows_hibernate::main_hidden(app);
         }
     }
     #[cfg(target_os = "macos")]
@@ -95,9 +159,13 @@ pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>) {
             crate::tray::popup_hidden(app);
         }
     }
-    if let Some(window) = app.get_webview_window("main") {
-        #[cfg(target_os = "windows")]
+    #[cfg(target_os = "windows")]
+    {
         crate::tray::main_window_memory_target(app, false);
+        crate::windows_hibernate::show_or_create(app);
+    }
+    #[cfg(not(target_os = "windows"))]
+    if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();

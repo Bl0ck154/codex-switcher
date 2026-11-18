@@ -24,6 +24,9 @@ use crate::{
 
 static TRAY_USAGE: LazyLock<Mutex<HashMap<String, UsageInfo>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+#[cfg(target_os = "windows")]
+static TRAY_USAGE_UPDATED: LazyLock<Mutex<HashMap<String, Instant>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 static TRAY_SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static TRAY_SWITCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TRAY_RIGHT_CLICK_AT: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| Mutex::new(None));
@@ -76,7 +79,7 @@ fn defer_menu_refresh(last_click: Option<Instant>, now: Instant) -> bool {
         .is_some_and(|start| now.saturating_duration_since(start) < TRAY_MENU_INTERACTION_GRACE)
 }
 
-const TRAY_ID: &str = "codex-switcher-tray";
+pub const TRAY_ID: &str = "codex-switcher-tray";
 const TRAY_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/tray.png");
 const TRAY_REFRESH_EVENT: &str = "tray-refresh";
 const ACCOUNTS_CHANGED_EVENT: &str = "accounts-changed";
@@ -267,12 +270,32 @@ fn watch_system_theme<R: Runtime>(app: AppHandle<R>) {
 
 /// Store usage reported by the main app and refresh the native menu labels.
 pub fn ingest_usage<R: Runtime>(app: &AppHandle<R>, usages: Vec<UsageInfo>) {
+    #[cfg(target_os = "windows")]
+    let updated_ids: Vec<String> = usages.iter().map(|u| u.account_id.clone()).collect();
     if let Ok(mut cache) = TRAY_USAGE.lock() {
         for usage in usages {
             cache.insert(usage.account_id.clone(), usage);
         }
     }
+    #[cfg(target_os = "windows")]
+    if let Ok(mut touched) = TRAY_USAGE_UPDATED.lock() {
+        let now = Instant::now();
+        for id in updated_ids {
+            touched.insert(id, now);
+        }
+    }
     refresh_menu(app);
+}
+
+/// Reuse the tray's recent quota instead of making another HTTP request to
+/// wake the full auto-switch/session-recovery workflow.
+#[cfg(target_os = "windows")]
+pub fn fresh_usage_for_auto_switch(account_id: &str) -> Option<UsageInfo> {
+    let touched = TRAY_USAGE_UPDATED.lock().ok()?;
+    if touched.get(account_id)?.elapsed() > Duration::from_secs(90) {
+        return None;
+    }
+    TRAY_USAGE.lock().ok()?.get(account_id).cloned()
 }
 
 // ============================================================================

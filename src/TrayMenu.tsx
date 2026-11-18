@@ -269,6 +269,9 @@ function TrayMenu() {
     setAutoWarmupAllEnabled(next);
     try {
       writeAutoWarmupAllEnabled(next);
+      if (isTauriRuntime() && /Windows/i.test(navigator.userAgent)) {
+        await invokeBackend("set_windows_auto_warmup_all", { enabled: next });
+      }
       if (isTauriRuntime()) {
         const { emit } = await import("@tauri-apps/api/event");
         await emit(AUTO_WARMUP_ALL_CHANGED_EVENT, next);
