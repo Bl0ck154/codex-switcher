@@ -41,6 +41,16 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            #[cfg(target_os = "windows")]
+            if window.label() == "main" {
+                if let tauri::WindowEvent::Resized(_) = event {
+                    // Minimize/restore without closing: hint to WebView2, not
+                    // TrySuspend, so background work remains available.
+                    let low = window.is_minimized().unwrap_or(false)
+                        || !window.is_visible().unwrap_or(true);
+                    tray::main_window_memory_target(&tauri::Manager::app_handle(window), low);
+                }
+            }
             #[cfg(desktop)]
             if window.label() == "main" {
                 if let tauri::WindowEvent::CloseRequested { api, .. } = event {
