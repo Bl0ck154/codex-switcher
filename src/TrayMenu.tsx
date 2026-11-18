@@ -290,6 +290,10 @@ function TrayMenu() {
     let unlistenTheme: (() => void) | undefined;
     let unlistenAutoWarmup: (() => void) | undefined;
 
+    // The first lazy popup may be shown before its event listeners are ready.
+    // Load on mount as well as on subsequent tray-refresh events.
+    void load();
+
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       unlistenRefresh = await listen(TRAY_REFRESH_EVENT, () => {
