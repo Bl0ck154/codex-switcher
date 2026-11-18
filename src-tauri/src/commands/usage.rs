@@ -1,5 +1,6 @@
 //! Usage query Tauri commands
 
+use crate::api::request_cache::{self, Endpoint};
 use crate::api::usage::{
     fetch_chatgpt_account_metadata, get_account_usage, refresh_all_usage,
     warmup_account as send_warmup, ChatGptAccountMetadata,
@@ -9,19 +10,9 @@ use crate::auth::{
 };
 use crate::types::{AccountInfo, AuthData, UsageInfo, WarmupSummary};
 use futures::{stream, StreamExt};
-use std::{
-    collections::HashMap,
-    sync::{LazyLock, Mutex},
-};
-
-static ACCOUNT_METADATA_CACHE: LazyLock<Mutex<HashMap<String, ChatGptAccountMetadata>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 pub(crate) fn apply_cached_account_metadata(account: &mut AccountInfo) {
-    let Ok(cache) = ACCOUNT_METADATA_CACHE.lock() else {
-        return;
-    };
-    let Some(metadata) = cache.get(&account.id) else {
+    let Some(metadata) = request_cache::get_cached_metadata(&account.id) else {
         return;
     };
 
@@ -69,9 +60,15 @@ pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo,
             let refreshed = ensure_chatgpt_tokens_fresh(&account)
                 .await
                 .map_err(|e| e.to_string())?;
-            let live_metadata = fetch_chatgpt_account_metadata(&refreshed)
-                .await
-                .map_err(|e| e.to_string())?;
+            let live_metadata = request_cache::get_or_fetch(
+                &refreshed,
+                Endpoint::Metadata,
+                request_cache::METADATA_TTL,
+                |_: &ChatGptAccountMetadata| true,
+                || fetch_chatgpt_account_metadata(&refreshed),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
 
             update_account_metadata(
                 &account_id,
@@ -82,10 +79,9 @@ pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo,
             )
             .map_err(|e| e.to_string())?;
 
-            ACCOUNT_METADATA_CACHE
-                .lock()
-                .map_err(|_| "Account metadata cache is unavailable".to_string())?
-                .insert(account_id.clone(), live_metadata.clone());
+            // Store updates invalidate the old generation. Re-seed only after
+            // successful persistence, so AccountInfo can display fresh expiry.
+            request_cache::store_metadata(&refreshed, &live_metadata);
 
             (refreshed, Some(live_metadata))
         }
