@@ -7,6 +7,7 @@ import { getResetCreditsDisplayCount, queueResetCreditsCheck } from "../lib/rese
 import { retryBusyUsage } from "../lib/retryBusyUsage";
 import { needsRelogin } from "../lib/accountAuth";
 import { UsageBar } from "./UsageBar";
+import { useOnScreenCard } from "../hooks/useOnScreenCard";
 
 const RESET_CREDITS_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const USAGE_STATS_OPEN_STORAGE_KEY_PREFIX = "usage-stats-open:";
@@ -99,6 +100,19 @@ function BlurredText({ children, blur }: { children: React.ReactNode; blur: bool
   );
 }
 
+function readStatsOpen(account: AccountWithUsage): boolean {
+  if (typeof window === "undefined") return account.is_active;
+  try {
+    const saved = window.localStorage.getItem(
+      `${USAGE_STATS_OPEN_STORAGE_KEY_PREFIX}${account.id}`,
+    );
+    if (saved !== null) return saved === "1";
+  } catch {
+    // Storage is optional; use the same default when unavailable.
+  }
+  return account.is_active;
+}
+
 export function AccountCard({
   account,
   onSwitch,
@@ -126,18 +140,8 @@ export function AccountCard({
   const [resetCredits, setResetCredits] = useState<AccountResetCredits | null>(null);
   const [resetCreditsError, setResetCreditsError] = useState(false);
   const [resetCreditsLoading, setResetCreditsLoading] = useState(false);
-  const [statsOpen, setStatsOpen] = useState<boolean>(() => {
-    if (typeof window === "undefined") return account.is_active;
-    try {
-      const stored = window.localStorage.getItem(
-        `${USAGE_STATS_OPEN_STORAGE_KEY_PREFIX}${account.id}`
-      );
-      if (stored !== null) return stored === "1";
-    } catch {
-      // Fall back to default.
-    }
-    return account.is_active;
-  });
+  const [statsOpen, setStatsOpen] = useState(() => readStatsOpen(account));
+  const { cardRef, workVisible } = useOnScreenCard();
   const inputRef = useRef<HTMLInputElement>(null);
   const resetRequestSeq = useRef(0);
 
@@ -155,6 +159,11 @@ export function AccountCard({
       return next;
     });
   };
+
+  // The active-account slot can reuse a card component for a different account.
+  useEffect(() => {
+    setStatsOpen(readStatsOpen(account));
+  }, [account.id]);
 
   useEffect(() => {
     if (isEditing && inputRef.current) {
@@ -261,7 +270,12 @@ export function AccountCard({
   useEffect(() => {
     setResetCredits(null);
     setResetCreditsError(false);
+  }, [account.id, account.auth_mode]);
 
+  // Only visible cards need reset-credit badges. Keep already fetched data
+  // when scrolled away, but stop timers and ignore responses after cleanup.
+  useEffect(() => {
+    if (!workVisible || account.auth_mode !== "chat_g_p_t") return;
     void loadResetCredits();
     const timer = window.setInterval(() => {
       void loadResetCredits();
@@ -271,17 +285,18 @@ export function AccountCard({
       resetRequestSeq.current += 1;
       window.clearInterval(timer);
     };
-  }, [loadResetCredits]);
+  }, [loadResetCredits, workVisible, account.auth_mode]);
 
   // Retry transient failures sooner than the six-hour periodic refresh.
   useEffect(() => {
-    if (!resetCreditsError) return;
+    if (!workVisible || !resetCreditsError) return;
     const timer = window.setInterval(() => void loadResetCredits(), 5 * 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [loadResetCredits, resetCreditsError]);
+  }, [loadResetCredits, resetCreditsError, workVisible]);
 
   return (
     <div
+      ref={cardRef}
       className={`relative flex h-full flex-col rounded-xl border p-5 transition-all duration-200 ${
         account.is_active
           ? "bg-white dark:bg-gray-900 border-emerald-400 shadow-sm"
@@ -507,13 +522,15 @@ export function AccountCard({
         </button>
       </div>
 
-      <AccountUsageStats
-        accountId={account.id}
-        enabled={account.auth_mode === "chat_g_p_t"}
-        open={statsOpen}
-        usage={account.usage}
-        usageLoading={account.usageLoading}
-      />
+      {statsOpen && workVisible && (
+        <AccountUsageStats
+          accountId={account.id}
+          enabled={account.auth_mode === "chat_g_p_t"}
+          open
+          usage={account.usage}
+          usageLoading={account.usageLoading}
+        />
+      )}
     </div>
   );
 }

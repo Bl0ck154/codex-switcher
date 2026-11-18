@@ -216,15 +216,31 @@ async fn switch_account_checked(
     // instead of returning a false success.
     let already_active = store.active_account_id.as_deref() == Some(account_id);
 
-    ensure_codex_not_running()?;
+    tokio::task::spawn_blocking(ensure_codex_not_running)
+        .await
+        .map_err(|e| e.to_string())??;
+
+    // Guard the entire token rotation, daemon shutdown, and auth.json write.
+    // Reads cannot return stale cached quota during an in-flight switch.
+    let _quota_switch_guard = crate::api::request_cache::begin_critical_switch();
 
     // The CLI daemon keeps the account it loaded at start. Stop it before
     // auth.json changes; the next CLI session starts a new daemon.
-    let daemon_stop = tokio::task::spawn_blocking(stop_cli_daemon_if_running).await;
+    // Resolve on the auth-operation thread: tests isolate Codex homes per thread.
+    let daemon_home = crate::auth::get_codex_home().map_err(|e| e.to_string())?;
+    let daemon_stop =
+        tokio::task::spawn_blocking(move || stop_cli_daemon_if_running(daemon_home)).await;
     if let Err(err) = daemon_stop
         .map_err(anyhow::Error::from)
         .and_then(|stopped| stopped)
     {
+        // On Windows the daemon must not retain the previous account's tokens.
+        // Unix retains its existing best-effort stop policy.
+        #[cfg(windows)]
+        return Err(format!(
+            "Cannot switch: Codex CLI daemon could not be stopped: {err:#}"
+        ));
+        #[cfg(not(windows))]
         println!("[Account] Failed to stop the Codex CLI daemon: {err:#}");
     }
 
@@ -252,6 +268,12 @@ async fn switch_account_checked(
         .await
         .map_err(|e| e.to_string())?;
     let token_elapsed = switch_started.elapsed();
+
+    // Token refresh may take time. Recheck immediately before touching auth.json;
+    // the UI's cached/periodic status is never an authorization to switch.
+    tokio::task::spawn_blocking(ensure_codex_not_running)
+        .await
+        .map_err(|e| e.to_string())??;
 
     // Write to ~/.codex/auth.json
     switch_to_account(&account).map_err(|e| e.to_string())?;

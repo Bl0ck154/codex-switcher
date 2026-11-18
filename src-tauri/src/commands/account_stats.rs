@@ -7,6 +7,7 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::api::request_cache::{self, Endpoint};
 use crate::auth::{ensure_chatgpt_tokens_fresh, load_accounts, refresh_chatgpt_tokens};
 use crate::types::{AuthData, AuthMode, StoredAccount};
 
@@ -228,28 +229,53 @@ pub async fn get_account_usage_stats(account_id: String) -> Result<AccountUsageS
         .map_err(|e| e.to_string())
 }
 
+// Keep a 401 outside the cached result. A token rotation persists new
+// credentials and intentionally invalidates the previous cache generation.
+#[derive(Clone, Serialize)]
+enum ProfileAttempt {
+    Unauthorized,
+    Ready(AccountUsageStats),
+}
+
 async fn fetch_profile_usage(account: &StoredAccount) -> anyhow::Result<AccountUsageStats> {
     let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
-    let mut response = send_profile_usage_request(&fresh_account).await?;
+    let attempt = request_cache::get_or_fetch(
+        &fresh_account,
+        Endpoint::Stats,
+        request_cache::STATS_TTL,
+        |value: &ProfileAttempt| {
+            matches!(value, ProfileAttempt::Ready(stats)
+                if stats.available && stats.error.is_none() && stats.reset_credits.is_some())
+        },
+        || async {
+            let response = send_profile_usage_request(&fresh_account).await?;
+            if response.status() == StatusCode::UNAUTHORIZED {
+                return Ok(ProfileAttempt::Unauthorized);
+            }
+            Ok(ProfileAttempt::Ready(
+                parse_profile_usage_with_reset_credits(&fresh_account, response).await?,
+            ))
+        },
+    )
+    .await?;
 
-    if response.status() == StatusCode::UNAUTHORIZED {
-        let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
-        response = send_profile_usage_request(&refreshed_account).await?;
-        return parse_profile_usage_with_reset_credits(&refreshed_account, response).await;
+    match attempt {
+        ProfileAttempt::Ready(stats) => Ok(stats),
+        ProfileAttempt::Unauthorized => {
+            let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
+            let response = send_profile_usage_request(&refreshed_account).await?;
+            parse_profile_usage_with_reset_credits(&refreshed_account, response).await
+        }
     }
-
-    parse_profile_usage_with_reset_credits(&fresh_account, response).await
 }
 
 async fn send_profile_usage_request(account: &StoredAccount) -> anyhow::Result<reqwest::Response> {
     let (access_token, chatgpt_account_id) = extract_chatgpt_auth(account)?;
-    let client = reqwest::Client::new();
-
-    Ok(client
-        .get(CHATGPT_PROFILE_USAGE_URL)
-        .headers(build_chatgpt_headers(access_token, chatgpt_account_id)?)
-        .send()
-        .await?)
+    request_cache::send_get(
+        CHATGPT_PROFILE_USAGE_URL,
+        build_chatgpt_headers(access_token, chatgpt_account_id)?,
+    )
+    .await
 }
 
 async fn parse_profile_usage_with_reset_credits(
@@ -282,16 +308,25 @@ async fn parse_profile_usage_response(
 }
 
 async fn fetch_reset_credits(account: &StoredAccount) -> anyhow::Result<AccountResetCredits> {
+    request_cache::get_or_fetch(
+        account,
+        Endpoint::ResetCredits,
+        request_cache::RESET_CREDITS_TTL,
+        |_: &AccountResetCredits| true,
+        || fetch_reset_credits_uncached(account),
+    )
+    .await
+}
+
+async fn fetch_reset_credits_uncached(
+    account: &StoredAccount,
+) -> anyhow::Result<AccountResetCredits> {
     let (access_token, chatgpt_account_id) = extract_chatgpt_auth(account)?;
-    let client = reqwest::Client::new();
-    let response = client
-        .get(CHATGPT_RESET_CREDITS_URL)
-        .headers(build_reset_credits_headers(
-            access_token,
-            chatgpt_account_id,
-        )?)
-        .send()
-        .await?;
+    let response = request_cache::send_get(
+        CHATGPT_RESET_CREDITS_URL,
+        build_reset_credits_headers(access_token, chatgpt_account_id)?,
+    )
+    .await?;
 
     let status = response.status();
     if !status.is_success() {

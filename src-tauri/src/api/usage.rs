@@ -7,10 +7,11 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, USER_AGENT},
     StatusCode,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
+use super::request_cache::{self, Endpoint};
 use crate::auth::{ensure_chatgpt_tokens_fresh, refresh_chatgpt_tokens};
 use crate::types::{
     AuthData, CreditStatusDetails, LunaReserveInfo, RateLimitDetails, RateLimitStatusPayload,
@@ -32,7 +33,7 @@ const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 const SESSION_WINDOW_SECONDS: i32 = 5 * 60 * 60;
 const WEEKLY_WINDOW_SECONDS: i32 = 7 * 24 * 60 * 60;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatGptAccountMetadata {
     pub plan_type: Option<String>,
     pub subscription_expires_at: Option<DateTime<Utc>>,
@@ -88,10 +89,15 @@ pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
 
 /// Send a minimal authenticated request to warm up account traffic paths.
 pub async fn warmup_account(account: &StoredAccount) -> Result<()> {
-    match &account.auth_data {
+    // A warm-up can consume credits or affect quotas. Cache must not survive it,
+    // including failed/aborted warm-ups.
+    request_cache::invalidate_all();
+    let result = match &account.auth_data {
         AuthData::ApiKey { key } => warmup_with_api_key(key).await,
         AuthData::ChatGPT { .. } => warmup_with_chatgpt_auth(account).await,
-    }
+    };
+    request_cache::invalidate_all();
+    result
 }
 
 pub async fn fetch_chatgpt_account_metadata(
@@ -149,45 +155,62 @@ pub async fn fetch_chatgpt_account_metadata(
     })
 }
 
+// A 401 is a control-flow signal, not a cacheable quota response.
+// Refresh happens *outside* the single-flight generation: token persistence
+// otherwise invalidates the request that initiated its own refresh.
+#[derive(Clone, Serialize)]
+enum UsageAttempt {
+    Unauthorized,
+    Ready(UsageInfo),
+}
+
 async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInfo> {
     let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
-    let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
+    let attempt = request_cache::get_or_fetch(
+        &fresh_account,
+        Endpoint::Usage,
+        request_cache::USAGE_TTL,
+        |value: &UsageAttempt| matches!(value, UsageAttempt::Ready(usage) if usage.error.is_none()),
+        || send_usage_attempt(&fresh_account),
+    )
+    .await?;
 
+    match attempt {
+        UsageAttempt::Ready(usage) => Ok(usage),
+        UsageAttempt::Unauthorized => {
+            println!(
+                "[Usage] Unauthorized for account {}, refreshing token and retrying once",
+                fresh_account.name
+            );
+            let refreshed = refresh_chatgpt_tokens(&fresh_account).await?;
+            let (token, account_id) = extract_chatgpt_auth(&refreshed)?;
+            let response = send_chatgpt_usage_request(token, account_id).await?;
+            parse_usage_response(&refreshed.id, &refreshed.name, response).await
+        }
+    }
+}
+
+async fn send_usage_attempt(account: &StoredAccount) -> Result<UsageAttempt> {
+    let (access_token, chatgpt_account_id) = extract_chatgpt_auth(account)?;
     let mut response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
 
-    // 401 means the token is genuinely expired — refresh and retry once.
-    // 403 is a Cloudflare challenge or permissions error; refreshing the token
-    // would burn the refresh token unnecessarily (refresh_token_reused error).
+    // Never rotate single-use tokens on 403: Cloudflare challenges are not
+    // evidence that the access token has expired.
     if response.status() == StatusCode::UNAUTHORIZED {
-        println!(
-            "[Usage] Unauthorized for account {}, refreshing token and retrying once",
-            fresh_account.name
-        );
-        let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
-        let (retry_token, retry_account_id) = extract_chatgpt_auth(&refreshed_account)?;
-        let retry_response = send_chatgpt_usage_request(retry_token, retry_account_id).await?;
-        return parse_usage_response(
-            &refreshed_account.id,
-            &refreshed_account.name,
-            retry_response,
-        )
-        .await;
+        return Ok(UsageAttempt::Unauthorized);
     }
-
-    // If Cloudflare temporarily challenged with 403, wait briefly and retry once
-    // without refreshing or burning the token.
     if response.status() == StatusCode::FORBIDDEN {
         tokio::time::sleep(std::time::Duration::from_millis(750)).await;
-        if let Ok(retry_resp) = send_chatgpt_usage_request(access_token, chatgpt_account_id).await {
-            if retry_resp.status().is_success() {
-                return parse_usage_response(&fresh_account.id, &fresh_account.name, retry_resp)
-                    .await;
-            }
-            response = retry_resp;
+        if let Ok(retry_response) =
+            send_chatgpt_usage_request(access_token, chatgpt_account_id).await
+        {
+            response = retry_response;
         }
     }
 
-    parse_usage_response(&fresh_account.id, &fresh_account.name, response).await
+    Ok(UsageAttempt::Ready(
+        parse_usage_response(&account.id, &account.name, response).await?,
+    ))
 }
 
 async fn parse_usage_response(
@@ -261,8 +284,9 @@ async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
 }
 
 async fn warmup_with_api_key(api_key: &str) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = request_cache::client();
     let payload = build_warmup_payload(false, true);
+    request_cache::record_outbound_request();
     let response = client
         .post(format!("{OPENAI_API}/responses"))
         .header(USER_AGENT, BROWSER_USER_AGENT)
@@ -398,13 +422,8 @@ async fn send_chatgpt_get_request(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Result<reqwest::Response> {
-    let client = reqwest::Client::new();
     let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
-
-    client
-        .get(url)
-        .headers(headers)
-        .send()
+    request_cache::send_get(url, headers)
         .await
         .with_context(|| format!("Failed to send GET request to {url}"))
 }
@@ -414,9 +433,10 @@ async fn send_chatgpt_warmup_request(
     chatgpt_account_id: Option<&str>,
     stream: bool,
 ) -> Result<reqwest::Response> {
-    let client = reqwest::Client::new();
+    let client = request_cache::client();
     let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
     let payload = build_warmup_payload(stream, false);
+    request_cache::record_outbound_request();
 
     client
         .post(CHATGPT_CODEX_RESPONSES_API)
