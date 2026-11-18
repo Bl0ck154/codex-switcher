@@ -326,7 +326,26 @@ impl RequestCache {
         let Some(key) = key_for(account, Endpoint::Metadata) else {
             return;
         };
+        // Keep the secondary AccountInfo snapshot bounded too. Provider strings
+        // must not bypass the response-cache memory limit.
+        let Ok(encoded) = serde_json::to_vec(data) else {
+            return;
+        };
+        if encoded.len() > 1024 {
+            return;
+        }
         let mut state = self.state();
+        Self::prune(&mut state);
+        if !state.metadata.contains_key(&account.id) && state.metadata.len() >= MAX_ENTRIES {
+            if let Some(oldest) = state
+                .metadata
+                .iter()
+                .min_by_key(|(_, (expires, _))| expires)
+                .map(|(id, _)| id.clone())
+            {
+                state.metadata.remove(&oldest);
+            }
+        }
         Self::insert(&mut state, key, METADATA_TTL, data.clone());
         state.metadata.insert(
             account.id.clone(),
@@ -536,4 +555,20 @@ mod tests {
         assert!(m.cache_bytes_estimate < MAX_CACHE_BYTES);
         assert_eq!(m.fetches, 300);
     }
+    #[tokio::test]
+    async fn metadata_snapshots_remain_bounded() {
+        let cache = RequestCache::default();
+        let metadata = ChatGptAccountMetadata {
+            plan_type: Some("plus".into()),
+            subscription_expires_at: None,
+        };
+        for i in 0..300 {
+            let mut a = account(&format!("token-{i}"));
+            a.id = format!("account-{i}");
+            cache.store_metadata(&a, &metadata);
+        }
+        assert!(cache.state().metadata.len() <= MAX_ENTRIES);
+        assert!(cache.metrics().cache_bytes_estimate < MAX_CACHE_BYTES);
+    }
+
 }
