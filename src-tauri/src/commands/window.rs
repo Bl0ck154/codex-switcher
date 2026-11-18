@@ -65,12 +65,19 @@ pub async fn sync_windows_warmup_settings(
             timed_warmup_enabled,
             timed_warmup_times,
             timed_warmup_ledger,
-        ).await
+        )
+        .await
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = (auto_warmup_all_enabled, auto_warmup_account_ids, auto_warmup_ledger,
-            timed_warmup_enabled, timed_warmup_times, timed_warmup_ledger);
+        let _ = (
+            auto_warmup_all_enabled,
+            auto_warmup_account_ids,
+            auto_warmup_ledger,
+            timed_warmup_enabled,
+            timed_warmup_times,
+            timed_warmup_ledger,
+        );
         Ok(crate::types::NativeBackgroundWarmup::default())
     }
 }
