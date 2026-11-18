@@ -57,8 +57,8 @@ function Get-PerfUserDataDir {
 }
 
 function Get-PerfRole {
-    param([string]$Name, [int]$Pid, [int]$RootPid)
-    if ($Pid -eq $RootPid) { return 'main' }
+    param([string]$Name, [int]$ProcessId, [int]$RootPid)
+    if ($ProcessId -eq $RootPid) { return 'main' }
     if ($Name -match '^msedgewebview2(\.exe)?$') { return 'webview2' }
     return 'helper'
 }
