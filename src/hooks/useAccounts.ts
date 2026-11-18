@@ -200,12 +200,11 @@ export function useAccounts() {
           prev.map((account) => {
             const usage = usageResults.get(account.id);
             if (!usage) return account;
-            if (sameUsage(account.usage, usage) && account.usageLoading === false) {
-              return account;
-            }
+            const unchanged = sameUsage(account.usage, usage);
+            if (unchanged && account.usageLoading === false) return account;
             return {
               ...account,
-              usage: sameUsage(account.usage, usage) ? account.usage : usage,
+              usage: unchanged ? account.usage : usage,
               usageLoading: false,
             };
           })
