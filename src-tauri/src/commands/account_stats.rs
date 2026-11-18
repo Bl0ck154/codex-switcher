@@ -8,6 +8,7 @@ use reqwest::{
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{ensure_chatgpt_tokens_fresh, load_accounts, refresh_chatgpt_tokens};
+use crate::api::request_cache::{self, Endpoint};
 use crate::types::{AuthData, AuthMode, StoredAccount};
 
 const CHATGPT_PROFILE_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/profiles/me";
@@ -223,9 +224,15 @@ pub async fn get_account_usage_stats(account_id: String) -> Result<AccountUsageS
         ));
     }
 
-    fetch_profile_usage(account)
-        .await
-        .map_err(|e| e.to_string())
+    request_cache::get_or_fetch(
+        account,
+        Endpoint::Stats,
+        request_cache::STATS_TTL,
+        |stats: &AccountUsageStats| {
+            stats.available && stats.error.is_none() && stats.reset_credits.is_some()
+        },
+        || fetch_profile_usage(account),
+    ).await.map_err(|e| e.to_string())
 }
 
 async fn fetch_profile_usage(account: &StoredAccount) -> anyhow::Result<AccountUsageStats> {
@@ -243,13 +250,10 @@ async fn fetch_profile_usage(account: &StoredAccount) -> anyhow::Result<AccountU
 
 async fn send_profile_usage_request(account: &StoredAccount) -> anyhow::Result<reqwest::Response> {
     let (access_token, chatgpt_account_id) = extract_chatgpt_auth(account)?;
-    let client = reqwest::Client::new();
-
-    Ok(client
-        .get(CHATGPT_PROFILE_USAGE_URL)
-        .headers(build_chatgpt_headers(access_token, chatgpt_account_id)?)
-        .send()
-        .await?)
+    request_cache::send_get(
+        CHATGPT_PROFILE_USAGE_URL,
+        build_chatgpt_headers(access_token, chatgpt_account_id)?,
+    ).await
 }
 
 async fn parse_profile_usage_with_reset_credits(
@@ -282,16 +286,21 @@ async fn parse_profile_usage_response(
 }
 
 async fn fetch_reset_credits(account: &StoredAccount) -> anyhow::Result<AccountResetCredits> {
+    request_cache::get_or_fetch(
+        account,
+        Endpoint::ResetCredits,
+        request_cache::RESET_CREDITS_TTL,
+        |_: &AccountResetCredits| true,
+        || fetch_reset_credits_uncached(account),
+    ).await
+}
+
+async fn fetch_reset_credits_uncached(account: &StoredAccount) -> anyhow::Result<AccountResetCredits> {
     let (access_token, chatgpt_account_id) = extract_chatgpt_auth(account)?;
-    let client = reqwest::Client::new();
-    let response = client
-        .get(CHATGPT_RESET_CREDITS_URL)
-        .headers(build_reset_credits_headers(
-            access_token,
-            chatgpt_account_id,
-        )?)
-        .send()
-        .await?;
+    let response = request_cache::send_get(
+        CHATGPT_RESET_CREDITS_URL,
+        build_reset_credits_headers(access_token, chatgpt_account_id)?,
+    ).await?;
 
     let status = response.status();
     if !status.is_success() {
