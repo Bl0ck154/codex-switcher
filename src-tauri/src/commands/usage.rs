@@ -73,9 +73,11 @@ pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo,
             // Avoid a redundant account-store write on each metadata poll.
             // Every write invalidates quota caches, so unchanged plan metadata
             // must not trigger additional quota network requests.
-            if live_metadata.plan_type.as_ref().is_some_and(|plan| {
-                refreshed.plan_type.as_deref() != Some(plan.as_str())
-            }) {
+            if live_metadata
+                .plan_type
+                .as_ref()
+                .is_some_and(|plan| refreshed.plan_type.as_deref() != Some(plan.as_str()))
+            {
                 update_account_metadata(
                     &account_id,
                     None,
