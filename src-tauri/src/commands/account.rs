@@ -227,6 +227,11 @@ async fn switch_account_checked(
         .map_err(anyhow::Error::from)
         .and_then(|stopped| stopped)
     {
+        // On Windows the daemon must not retain the previous account's tokens.
+        // Unix retains its existing best-effort stop policy.
+        #[cfg(windows)]
+        return Err(format!("Cannot switch: Codex CLI daemon could not be stopped: {err:#}"));
+        #[cfg(not(windows))]
         println!("[Account] Failed to stop the Codex CLI daemon: {err:#}");
     }
 
