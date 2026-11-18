@@ -701,7 +701,7 @@ fn classify_windows_codex_processes(processes: &[WindowsCodexProcess]) -> (Vec<u
                 command.contains("resources\\codex.exe") && command.contains("app-server")
             });
 
-        if has_window || has_renderer || has_app_server {
+        if has_window || has_renderer || has_app_server || is_windows_codex_cli_session(process) {
             active_pids.push(process.process_id);
         } else {
             // Ignore stale helper trees left behind after the window has already closed.
@@ -713,6 +713,31 @@ fn classify_windows_codex_processes(processes: &[WindowsCodexProcess]) -> (Vec<u
     active_pids.dedup();
 
     (active_pids, ignored_count)
+}
+
+/// A headless codex.exe can be a live terminal session. Do not classify these
+/// as abandoned GUI roots. Daemons, IDE helpers and known GUI installations
+/// retain their existing, separate detection rules.
+#[cfg(any(windows, test))]
+fn is_windows_codex_cli_session(process: &WindowsCodexProcess) -> bool {
+    if !process.name.eq_ignore_ascii_case("codex.exe") {
+        return false;
+    }
+    let command = normalize_windows_path(&process.command_line);
+    if command.contains("--type=")
+        || command.contains("--managed-daemon")
+        || command.contains(" app-server")
+        || command.contains(" exec-server")
+        || is_ide_plugin_process(&command)
+    {
+        return false;
+    }
+    let path = normalize_windows_path(&process.executable_path);
+    !path.is_empty()
+        && !path.contains("\\resources\\")
+        && !path.contains("\\windowsapps\\")
+        && !path.contains("\\programs\\codex\\")
+        && !path.contains("\\openai\\codex\\bin\\codex.exe")
 }
 
 #[cfg(any(windows, test))]
@@ -743,7 +768,7 @@ fn is_windows_codex_root_process(process: &WindowsCodexProcess) -> bool {
     let name = process.name.to_ascii_lowercase();
     let command = normalize_windows_path(&process.command_line);
 
-    if command.contains("codex-switcher") || command.contains("--type=") {
+    if command.contains("--type=") {
         return false;
     }
 
@@ -1069,6 +1094,26 @@ mod tests {
         assert_eq!(
             classify_windows_codex_processes(&processes),
             (vec![100, 200], 0)
+        );
+    }
+
+    #[test]
+    fn windows_interactive_cli_blocks_switch_but_managed_daemon_does_not() {
+        let cli = windows_process(
+            "codex.exe", 301, 1,
+            r"C:\Users\test\.cargo\bin\codex.exe",
+            r#""C:\Users\test\.cargo\bin\codex.exe" --model o3 -C C:\dev\codex-switcher"#,
+            "",
+        );
+        let daemon = windows_process(
+            "codex.exe", 302, 1,
+            r"C:\Users\test\.cargo\bin\codex.exe",
+            r#""C:\Users\test\.cargo\bin\codex.exe" app-server --managed-daemon"#,
+            "",
+        );
+        assert_eq!(
+            classify_windows_codex_processes(&[cli, daemon]),
+            (vec![301], 1)
         );
     }
 
