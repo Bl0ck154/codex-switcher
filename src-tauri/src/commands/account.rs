@@ -222,7 +222,9 @@ async fn switch_account_checked(
 
     // The CLI daemon keeps the account it loaded at start. Stop it before
     // auth.json changes; the next CLI session starts a new daemon.
-    let daemon_stop = tokio::task::spawn_blocking(stop_cli_daemon_if_running).await;
+    // Resolve on the auth-operation thread: tests isolate Codex homes per thread.
+    let daemon_home = crate::auth::get_codex_home().map_err(|e| e.to_string())?;
+    let daemon_stop = tokio::task::spawn_blocking(move || stop_cli_daemon_if_running(daemon_home)).await;
     if let Err(err) = daemon_stop
         .map_err(anyhow::Error::from)
         .and_then(|stopped| stopped)
