@@ -10,7 +10,7 @@ import { invokeBackend, isTauriRuntime, type FileSource } from "../lib/platform"
 import { completeOAuthWithoutBlockingOnUsage } from "../lib/oauthCompletion";
 import { completeImportWithoutBlockingOnUsage } from "../lib/accountImportCompletion";
 import { retryBusyUsage } from "../lib/retryBusyUsage";
-import { reconcileAccounts } from "../lib/accountState";
+import { reconcileAccounts, sameUsage } from "../lib/accountState";
 
 export function useAccounts() {
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
@@ -152,7 +152,7 @@ export function useAccounts() {
   const refreshUsage = useCallback(
     async (
       accountList?: AccountInfo[] | AccountWithUsage[],
-      options?: { refreshMetadata?: boolean }
+      options?: { refreshMetadata?: boolean; silent?: boolean }
     ) => {
       try {
         const list = accountList ?? accountsRef.current;
@@ -165,13 +165,15 @@ export function useAccounts() {
         const accountIdSet = new Set(accountIds);
         const usageResults = new Map<string, UsageInfo>();
 
-        setAccounts((prev) =>
-          prev.map((account) =>
-            accountIdSet.has(account.id)
-              ? { ...account, usageLoading: true }
-              : account
-          )
-        );
+        if (!options?.silent) {
+          setAccounts((prev) =>
+            prev.map((account) =>
+              accountIdSet.has(account.id) && !account.usageLoading
+                ? { ...account, usageLoading: true }
+                : account
+            )
+          );
+        }
 
         await runWithConcurrency(
           list,
@@ -198,9 +200,12 @@ export function useAccounts() {
           prev.map((account) => {
             const usage = usageResults.get(account.id);
             if (!usage) return account;
+            if (sameUsage(account.usage, usage) && account.usageLoading === false) {
+              return account;
+            }
             return {
               ...account,
-              usage,
+              usage: sameUsage(account.usage, usage) ? account.usage : usage,
               usageLoading: false,
             };
           })
@@ -462,7 +467,11 @@ export function useAccounts() {
     };
     const pollUsage = async () => {
       try {
-        await refreshUsage();
+        // Suppress per-card loading animations for an unfocused/hidden main
+        // window while still feeding fresh quotas to automatic warm-up.
+        const silent = typeof document !== "undefined" &&
+          (document.visibilityState === "hidden" || !document.hasFocus());
+        await refreshUsage(undefined, { silent });
       } catch (error) {
         console.warn("Automatic usage refresh failed:", error);
       } finally {
