@@ -22,11 +22,25 @@ test("next batch waits for the previous batch and empty input is a no-op", async
   assert.deepEqual(started, [1, 2]);
   pending.shift()?.();
   pending.shift()?.();
-  await Promise.resolve();
-  await Promise.resolve();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   assert.deepEqual(started, [1, 2, 3]);
   pending.shift()?.();
   await promise;
   assert.deepEqual(completed, [[1, 2], [3]]);
   await mapInBatches([], 2, async (item) => item, () => assert.fail("unexpected flush"));
+});
+
+test("superseded refresh does not start another batch", async () => {
+  let active = true;
+  const started: number[] = [];
+  const batches: number[][] = [];
+  await mapInBatches([1, 2, 3], 2, async (item) => {
+    started.push(item);
+    return item;
+  }, (batch) => {
+    batches.push(batch);
+    active = false;
+  }, () => active);
+  assert.deepEqual(started, [1, 2]);
+  assert.deepEqual(batches, [[1, 2]]);
 });
