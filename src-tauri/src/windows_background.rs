@@ -31,10 +31,13 @@ fn quota_exhausted(usage: &UsageInfo) -> bool {
     {
         return false;
     }
-    usage.primary_used_percent.is_some_and(|used| used.is_finite() && used >= 100.0)
-        || usage.secondary_used_percent.is_some_and(|used| used.is_finite() && used >= 100.0)
+    usage
+        .primary_used_percent
+        .is_some_and(|used| used.is_finite() && used >= 100.0)
+        || usage
+            .secondary_used_percent
+            .is_some_and(|used| used.is_finite() && used >= 100.0)
 }
-
 
 fn merge_history(
     stored: &mut HashMap<String, NativeWarmupHistory>,
@@ -147,12 +150,16 @@ pub fn setup(app: AppHandle) {
             if last_auto_switch_wake.is_none_or(|at| at.elapsed() >= AUTO_SWITCH_WAKE_COOLDOWN) {
                 if let Ok(settings) = load_app_settings() {
                     let background = settings.windows_background_warmup;
-                    if background.initialized && background.auto_switch_enabled
-                        && app.get_webview_window("main").is_none() {
+                    if background.initialized
+                        && background.auto_switch_enabled
+                        && app.get_webview_window("main").is_none()
+                    {
                         if let Ok(store) = load_accounts() {
                             if let Some(id) = store.active_account_id {
                                 if crate::tray::fresh_usage_for_auto_switch(&id)
-                                    .as_ref().is_some_and(quota_exhausted) {
+                                    .as_ref()
+                                    .is_some_and(quota_exhausted)
+                                {
                                     last_auto_switch_wake = Some(Instant::now());
                                     crate::windows_hibernate::show_or_create(&app);
                                 }
