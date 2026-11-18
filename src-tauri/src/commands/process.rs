@@ -9,7 +9,7 @@ pub use desktop_reopen::*;
 
 use super::cli_daemon::is_cli_daemon_running;
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 use anyhow::Context;
 
 #[cfg(unix)]
@@ -740,7 +740,7 @@ fn is_windows_codex_cli_session(process: &WindowsCodexProcess) -> bool {
 
 }
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 fn parse_windows_codex_processes(stdout: &str) -> anyhow::Result<Vec<WindowsCodexProcess>> {
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
