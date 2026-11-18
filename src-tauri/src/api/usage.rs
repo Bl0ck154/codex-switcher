@@ -83,16 +83,7 @@ pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
             credits_balance: None,
             error: Some("Usage info not available for API key accounts".to_string()),
         }),
-        AuthData::ChatGPT { .. } => {
-            request_cache::get_or_fetch(
-                account,
-                Endpoint::Usage,
-                request_cache::USAGE_TTL,
-                |usage: &UsageInfo| usage.error.is_none(),
-                || get_usage_with_chatgpt_auth(account),
-            )
-            .await
-        }
+        AuthData::ChatGPT { .. } => get_usage_with_chatgpt_auth(account).await,
     }
 }
 
@@ -164,45 +155,64 @@ pub async fn fetch_chatgpt_account_metadata(
     })
 }
 
+// A 401 is a control-flow signal, not a cacheable quota response.
+// Refresh happens *outside* the single-flight generation: token persistence
+// otherwise invalidates the request that initiated its own refresh.
+#[derive(Clone, Serialize)]
+enum UsageAttempt {
+    Unauthorized,
+    Ready(UsageInfo),
+}
+
 async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInfo> {
     let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
-    let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
+    let attempt = request_cache::get_or_fetch(
+        &fresh_account,
+        Endpoint::Usage,
+        request_cache::USAGE_TTL,
+        |value: &UsageAttempt| {
+            matches!(value, UsageAttempt::Ready(usage) if usage.error.is_none())
+        },
+        || send_usage_attempt(&fresh_account),
+    )
+    .await?;
 
+    match attempt {
+        UsageAttempt::Ready(usage) => Ok(usage),
+        UsageAttempt::Unauthorized => {
+            println!(
+                "[Usage] Unauthorized for account {}, refreshing token and retrying once",
+                fresh_account.name
+            );
+            let refreshed = refresh_chatgpt_tokens(&fresh_account).await?;
+            let (token, account_id) = extract_chatgpt_auth(&refreshed)?;
+            let response = send_chatgpt_usage_request(token, account_id).await?;
+            parse_usage_response(&refreshed.id, &refreshed.name, response).await
+        }
+    }
+}
+
+async fn send_usage_attempt(account: &StoredAccount) -> Result<UsageAttempt> {
+    let (access_token, chatgpt_account_id) = extract_chatgpt_auth(account)?;
     let mut response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
 
-    // 401 means the token is genuinely expired — refresh and retry once.
-    // 403 is a Cloudflare challenge or permissions error; refreshing the token
-    // would burn the refresh token unnecessarily (refresh_token_reused error).
+    // Never rotate single-use tokens on 403: Cloudflare challenges are not
+    // evidence that the access token has expired.
     if response.status() == StatusCode::UNAUTHORIZED {
-        println!(
-            "[Usage] Unauthorized for account {}, refreshing token and retrying once",
-            fresh_account.name
-        );
-        let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
-        let (retry_token, retry_account_id) = extract_chatgpt_auth(&refreshed_account)?;
-        let retry_response = send_chatgpt_usage_request(retry_token, retry_account_id).await?;
-        return parse_usage_response(
-            &refreshed_account.id,
-            &refreshed_account.name,
-            retry_response,
-        )
-        .await;
+        return Ok(UsageAttempt::Unauthorized);
     }
-
-    // If Cloudflare temporarily challenged with 403, wait briefly and retry once
-    // without refreshing or burning the token.
     if response.status() == StatusCode::FORBIDDEN {
         tokio::time::sleep(std::time::Duration::from_millis(750)).await;
-        if let Ok(retry_resp) = send_chatgpt_usage_request(access_token, chatgpt_account_id).await {
-            if retry_resp.status().is_success() {
-                return parse_usage_response(&fresh_account.id, &fresh_account.name, retry_resp)
-                    .await;
-            }
-            response = retry_resp;
+        if let Ok(retry_response) =
+            send_chatgpt_usage_request(access_token, chatgpt_account_id).await
+        {
+            response = retry_response;
         }
     }
 
-    parse_usage_response(&fresh_account.id, &fresh_account.name, response).await
+    Ok(UsageAttempt::Ready(
+        parse_usage_response(&account.id, &account.name, response).await?,
+    ))
 }
 
 async fn parse_usage_response(
