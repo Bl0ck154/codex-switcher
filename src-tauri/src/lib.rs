@@ -10,6 +10,8 @@ pub mod tray;
 pub mod types;
 pub mod web;
 #[cfg(target_os = "windows")]
+pub mod windows_background;
+#[cfg(target_os = "windows")]
 pub mod windows_hibernate;
 
 use commands::{
@@ -39,6 +41,8 @@ pub fn run() {
                     .plugin(tauri_plugin_updater::Builder::new().build())?;
                 app_menu::setup(app.handle())?;
                 tray::setup(app.handle())?;
+                #[cfg(target_os = "windows")]
+                windows_background::setup(app.handle().clone());
             }
             Ok(())
         })
@@ -119,6 +123,8 @@ pub fn run() {
             quit_app,
             report_usage,
             commands::report_main_hibernation_state,
+            commands::sync_windows_warmup_settings,
+            commands::set_windows_auto_warmup_all,
             get_dock_display_mode,
             set_dock_display_mode,
             complete_close_behavior,

@@ -46,6 +46,49 @@ pub fn hide_tray_window(app: AppHandle) {
     }
 }
 
+/// Persist the React warm-up settings and reconcile the native ledger.
+#[tauri::command]
+pub async fn sync_windows_warmup_settings(
+    auto_warmup_all_enabled: bool,
+    auto_warmup_account_ids: Vec<String>,
+    auto_warmup_ledger: std::collections::HashMap<String, crate::types::NativeWarmupHistory>,
+    timed_warmup_enabled: bool,
+    timed_warmup_times: Vec<String>,
+    timed_warmup_ledger: std::collections::HashMap<String, String>,
+) -> Result<crate::types::NativeBackgroundWarmup, String> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows_background::sync_from_frontend(
+            auto_warmup_all_enabled,
+            auto_warmup_account_ids,
+            auto_warmup_ledger,
+            timed_warmup_enabled,
+            timed_warmup_times,
+            timed_warmup_ledger,
+        ).await
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (auto_warmup_all_enabled, auto_warmup_account_ids, auto_warmup_ledger,
+            timed_warmup_enabled, timed_warmup_times, timed_warmup_ledger);
+        Ok(crate::types::NativeBackgroundWarmup::default())
+    }
+}
+
+/// Update the background scheduler directly from the tray popup.
+#[tauri::command]
+pub async fn set_windows_auto_warmup_all(enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::windows_background::change_all_enabled(enabled).await
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = enabled;
+        Ok(())
+    }
+}
+
 /// A positive handshake only when no React background work requires this WebView.
 #[tauri::command]
 pub fn report_main_hibernation_state(app: AppHandle, idle: bool) {

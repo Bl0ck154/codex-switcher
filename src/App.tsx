@@ -70,6 +70,8 @@ type AutoWarmupLedger = Record<
     lastAutoWindowKind?: AutoWarmupWindowKind;
   }
 >;
+const isWindowsDesktop =
+  typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
 const isMacOs =
   typeof navigator !== "undefined" &&
   /(Mac|iPhone|iPod|iPad)/i.test(navigator.userAgent);
@@ -222,6 +224,11 @@ function App() {
     message: string;
     isError: boolean;
   } | null>(null);
+  const [nativeWarmupReady, setNativeWarmupReady] = useState(() =>
+    !isWindowsDesktop || !isTauriRuntime()
+  );
+  const [timedLedgerVersion, setTimedLedgerVersion] = useState(0);
+  const nativeWarmupSyncSeq = useRef(0);
   const [autoWarmupAllEnabled, setAutoWarmupAllEnabled] = useState(() => {
     return readAutoWarmupAllEnabled();
   });
@@ -961,6 +968,66 @@ function App() {
   });
 
 
+
+  // Rust takes over auto/timed warm-up only after the main WebView is destroyed.
+  // Reconcile its persistent ledger before React resumes scheduling; a stale
+  // localStorage snapshot must never replay a warm-up already sent by Rust.
+  useEffect(() => {
+    if (!isWindowsDesktop || !isTauriRuntime()) return;
+    const requestId = ++nativeWarmupSyncSeq.current;
+    setNativeWarmupReady(false);
+    void invokeBackend<{
+      autoWarmupLedger: AutoWarmupLedger;
+      timedWarmupLedger: Record<string, string>;
+    }>("sync_windows_warmup_settings", {
+      autoWarmupAllEnabled,
+      autoWarmupAccountIds: Array.from(autoWarmupAccountIds),
+      autoWarmupLedger,
+      timedWarmupEnabled,
+      timedWarmupTimes,
+      timedWarmupLedger: timedWarmupLastFireRef.current,
+    }).then((snapshot) => {
+      if (requestId !== nativeWarmupSyncSeq.current) return;
+      setAutoWarmupLedger((previous) => {
+        const next = { ...previous };
+        let updated = false;
+        for (const [id, native] of Object.entries(snapshot.autoWarmupLedger)) {
+          const prev = previous[id];
+          const nativeAt = native.lastSuccessfulWarmupAt ?? 0;
+          const prevAt = prev?.lastSuccessfulWarmupAt ?? 0;
+          if (nativeAt > prevAt || (nativeAt === prevAt &&
+              native.lastAutoWindowKey && !prev?.lastAutoWindowKey)) {
+            next[id] = native;
+            updated = true;
+          }
+        }
+        return updated ? next : previous;
+      });
+      const current = timedWarmupLastFireRef.current;
+      let timedChanged = false;
+      for (const [time, day] of Object.entries(snapshot.timedWarmupLedger)) {
+        if (current[time] !== day) {
+          current[time] = day;
+          timedChanged = true;
+        }
+      }
+      if (timedChanged) {
+        try {
+          window.localStorage.setItem(TIMED_WARMUP_LEDGER_STORAGE_KEY, JSON.stringify(current));
+        } catch { /* The native ledger remains durable. */ }
+        setTimedLedgerVersion((value) => value + 1);
+      }
+      setNativeWarmupReady(true);
+    }).catch((error) => {
+      if (requestId === nativeWarmupSyncSeq.current) {
+        console.warn("Native warm-up handoff unavailable; keeping WebView alive:", error);
+      }
+    });
+  }, [
+    autoWarmupAllEnabled, autoWarmupAccountIds, autoWarmupLedger,
+    timedWarmupEnabled, timedWarmupTimes, timedLedgerVersion,
+  ]);
+
   // Releasing a Windows WebView2 is safe only when the current page has no
   // pending user action or React-owned background automation. Backend tray
   // polling stays alive; auto-switch and warm-up remain unchanged.
@@ -968,10 +1035,8 @@ function App() {
     if (!isTauriRuntime() || typeof navigator === "undefined" ||
         !/Windows/i.test(navigator.userAgent)) return;
     const idle =
+      nativeWarmupReady &&
       !autoSwitchEnabled &&
-      !autoWarmupAllEnabled &&
-      autoWarmupAccountIds.size === 0 &&
-      !timedWarmupEnabled &&
       !autoSwitcher.busy &&
       autoWarmupRunningIds.size === 0 &&
       !timedWarmupRunning &&
@@ -999,8 +1064,7 @@ function App() {
     void invokeBackend("report_main_hibernation_state", { idle })
       .catch((error) => console.warn("Could not update WebView hibernation state:", error));
   }, [
-    autoSwitchEnabled, autoWarmupAllEnabled, autoWarmupAccountIds.size,
-    timedWarmupEnabled, autoSwitcher.busy, autoWarmupRunningIds.size,
+    nativeWarmupReady, autoSwitchEnabled, autoSwitcher.busy, autoWarmupRunningIds.size,
     timedWarmupRunning, loading, switchingId, warmingUpId,
     isRefreshing, isWarmingAll, isOpeningCodex, isImportingSlim,
     isImportingFull, isExportingSlim, isExportingFull,
@@ -1200,7 +1264,7 @@ function App() {
   );
 
   useEffect(() => {
-    if (!autoWarmupAllEnabled && autoWarmupAccountIds.size === 0) return;
+    if (!nativeWarmupReady || (!autoWarmupAllEnabled && autoWarmupAccountIds.size === 0)) return;
 
     const checkAutoWarmup = () => {
       for (const account of accountsRef.current) {
@@ -1227,6 +1291,7 @@ function App() {
   }, [
     autoWarmupAccountIds.size,
     autoWarmupAllEnabled,
+    nativeWarmupReady,
     getDueAutoWarmupForAccount,
     runAutoWarmupForAccount,
   ]);
@@ -1264,7 +1329,7 @@ function App() {
   }, [markSuccessfulWarmup, showWarmupToast, warmupAccount]);
 
   useEffect(() => {
-    if (!timedWarmupEnabled || timedWarmupTimes.length === 0) return;
+    if (!nativeWarmupReady || !timedWarmupEnabled || timedWarmupTimes.length === 0) return;
 
     const checkTimedWarmup = () => {
       if (timedWarmupRunningRef.current) return;
@@ -1283,6 +1348,7 @@ function App() {
 
       // Mark before running so a slow warm-up can't double-fire on the next tick.
       timedWarmupLastFireRef.current[currentTime] = todayKey;
+      setTimedLedgerVersion((value) => value + 1);
       try {
         window.localStorage.setItem(
           TIMED_WARMUP_LEDGER_STORAGE_KEY,
@@ -1304,6 +1370,7 @@ function App() {
   }, [
     timedWarmupEnabled,
     timedWarmupTimes,
+    nativeWarmupReady,
     timedWarmupTargetsReady,
     timedWarmupTargetCount,
     runTimedWarmup,

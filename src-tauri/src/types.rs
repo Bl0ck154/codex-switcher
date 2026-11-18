@@ -40,6 +40,28 @@ fn default_close_behavior_prompt_enabled() -> bool {
     true
 }
 
+/// Persisted mirror of WebView localStorage preferences. The native Windows
+/// scheduler only runs while the main React WebView is fully destroyed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct NativeWarmupHistory {
+    pub last_successful_warmup_at: Option<i64>,
+    pub last_auto_window_key: Option<String>,
+    pub last_auto_window_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct NativeBackgroundWarmup {
+    pub initialized: bool,
+    pub auto_warmup_all_enabled: bool,
+    pub auto_warmup_account_ids: Vec<String>,
+    pub auto_warmup_ledger: std::collections::HashMap<String, NativeWarmupHistory>,
+    pub timed_warmup_enabled: bool,
+    pub timed_warmup_times: Vec<String>,
+    pub timed_warmup_ledger: std::collections::HashMap<String, String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -47,6 +69,8 @@ pub struct AppSettings {
     pub dock_display_mode: DockDisplayMode,
     #[serde(default = "default_close_behavior_prompt_enabled")]
     pub close_behavior_prompt_enabled: bool,
+    #[serde(default)]
+    pub windows_background_warmup: NativeBackgroundWarmup,
 }
 
 impl Default for AppSettings {
@@ -55,6 +79,7 @@ impl Default for AppSettings {
             tray_display_mode: TrayDisplayMode::default(),
             dock_display_mode: DockDisplayMode::default(),
             close_behavior_prompt_enabled: true,
+            windows_background_warmup: NativeBackgroundWarmup::default(),
         }
     }
 }
