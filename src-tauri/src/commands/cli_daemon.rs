@@ -11,22 +11,22 @@ use crate::auth::get_codex_home;
 /// Whether the managed CLI daemon for the current Codex home is running.
 /// None where the daemon cannot be detected.
 pub(crate) fn is_cli_daemon_running() -> Option<bool> {
-    if cfg!(not(unix)) {
-        return None;
+    #[cfg(any(unix, windows))]
+    {
+        return get_codex_home()
+            .ok()
+            .map(|home| running_daemon_pid(&home).is_some());
     }
-
-    let running = get_codex_home()
-        .ok()
-        .and_then(|codex_home| running_daemon_pid(&codex_home))
-        .is_some();
-    Some(running)
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
 }
 
 /// Stop the managed CLI daemon so it cannot keep the previous account.
 /// The next CLI session starts a new daemon from its own environment.
 /// Returns false when no daemon is running.
-pub(crate) fn stop_cli_daemon_if_running() -> anyhow::Result<bool> {
-    let codex_home = get_codex_home()?;
+pub(crate) fn stop_cli_daemon_if_running(codex_home: PathBuf) -> anyhow::Result<bool> {
     if running_daemon_pid(&codex_home).is_none() {
         return Ok(false);
     }
@@ -59,7 +59,7 @@ fn managed_codex_path(codex_home: &Path) -> PathBuf {
         .join("app-server-daemon")
         .join("current")
         .join("bin")
-        .join("codex")
+        .join(if cfg!(windows) { "codex.exe" } else { "codex" })
 }
 
 #[cfg(unix)]
@@ -72,8 +72,12 @@ fn read_process_command(pid: u32) -> Option<String> {
     (output.status.success() && !command.is_empty()).then_some(command)
 }
 
-// The daemon listens on a Unix socket; other platforms are not detected yet.
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn read_process_command(pid: u32) -> Option<String> {
+    super::process::read_windows_process_command(pid)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn read_process_command(_pid: u32) -> Option<String> {
     None
 }
@@ -96,6 +100,17 @@ mod tests {
 
     const RELEASE_BIN: &str =
         "/Users/me/.codex/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/bin/codex";
+
+    #[cfg(windows)]
+    #[test]
+    fn managed_windows_daemon_uses_exe_path() {
+        assert_eq!(
+            super::managed_codex_path(std::path::Path::new(r"C:\CodexHome"))
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("codex.exe")
+        );
+    }
 
     #[test]
     fn reads_the_pid_from_the_daemon_pid_file() {

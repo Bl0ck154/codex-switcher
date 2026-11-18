@@ -9,7 +9,7 @@ pub use desktop_reopen::*;
 
 use super::cli_daemon::is_cli_daemon_running;
 
-#[cfg(any(windows, test))]
+#[cfg(test)]
 use anyhow::Context;
 
 #[cfg(unix)]
@@ -20,6 +20,10 @@ use std::collections::HashSet;
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+
+#[cfg(windows)]
+#[path = "windows_process_snapshot.rs"]
+mod windows_process_snapshot;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -78,16 +82,19 @@ const CODEX_RUNNING_SWITCH_BLOCKED_PREFIX: &str = "Cannot switch accounts while 
 /// Check for running Codex processes
 #[tauri::command]
 pub async fn check_codex_processes() -> Result<CodexProcessInfo, String> {
-    let (pids, bg_count) = find_codex_processes().map_err(|e| e.to_string())?;
-    let count = pids.len();
-
-    Ok(CodexProcessInfo {
-        count,
-        background_count: bg_count,
-        can_switch: count == 0,
-        pids,
-        cli_daemon_running: is_cli_daemon_running(),
+    tokio::task::spawn_blocking(|| {
+        let (pids, bg_count) = find_codex_processes().map_err(|e| e.to_string())?;
+        let count = pids.len();
+        Ok(CodexProcessInfo {
+            count,
+            background_count: bg_count,
+            can_switch: count == 0,
+            pids,
+            cli_daemon_running: is_cli_daemon_running(),
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 pub(crate) fn ensure_codex_not_running() -> Result<(), String> {
@@ -443,12 +450,7 @@ fn process_exists(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
-        return Command::new("tasklist")
-            .creation_flags(CREATE_NO_WINDOW)
-            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-            .output()
-            .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
-            .unwrap_or(false);
+        return windows_process_snapshot::process_exists(pid);
     }
 
     #[allow(unreachable_code)]
@@ -646,53 +648,12 @@ fn find_windows_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
 
 #[cfg(windows)]
 fn read_windows_codex_processes() -> anyhow::Result<Vec<WindowsCodexProcess>> {
-    // tasklist counts every Electron helper (`--type=gpu-process`, crashpad, renderer, etc.),
-    // which inflates the badge and incorrectly blocks switching. Use PowerShell so we can inspect
-    // the command line and only count live top-level app instances.
-    const POWERSHELL_SCRIPT: &str = r#"
-$windowTitles = @{}
-Get-Process -Name Codex,ChatGPT -ErrorAction SilentlyContinue | ForEach-Object {
-  $windowTitles[[uint32]$_.Id] = $_.MainWindowTitle
+    windows_process_snapshot::read()
 }
 
-# WMI server-side filter: do not enumerate every process on the machine
-# for each check. Switch performs a UI preflight and a backend safety check.
-Get-CimInstance -ClassName Win32_Process -Filter "Name='Codex.exe' OR Name='ChatGPT.exe'" |
-  ForEach-Object {
-    [PSCustomObject]@{
-      Name = $_.Name
-      ProcessId = [uint32]$_.ProcessId
-      ParentProcessId = [uint32]$_.ParentProcessId
-      CommandLine = if ($_.CommandLine) { $_.CommandLine } else { '' }
-      ExecutablePath = if ($_.ExecutablePath) { $_.ExecutablePath } else { '' }
-      MainWindowTitle = if ($windowTitles.ContainsKey([uint32]$_.ProcessId)) {
-        [string]$windowTitles[[uint32]$_.ProcessId]
-      } else {
-        ''
-      }
-    }
-  } |
-  ConvertTo-Json -Compress
-"#;
-
-    let output = Command::new("powershell.exe")
-        .creation_flags(CREATE_NO_WINDOW)
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            POWERSHELL_SCRIPT,
-        ])
-        .output()
-        .context("failed to query Windows process list")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("PowerShell process query failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    parse_windows_codex_processes(&stdout)
+#[cfg(windows)]
+pub(super) fn read_windows_process_command(pid: u32) -> Option<String> {
+    windows_process_snapshot::command_line_for_pid(pid)
 }
 
 #[cfg(windows)]
@@ -740,7 +701,7 @@ fn classify_windows_codex_processes(processes: &[WindowsCodexProcess]) -> (Vec<u
                 command.contains("resources\\codex.exe") && command.contains("app-server")
             });
 
-        if has_window || has_renderer || has_app_server {
+        if has_window || has_renderer || has_app_server || is_windows_codex_cli_session(process) {
             active_pids.push(process.process_id);
         } else {
             // Ignore stale helper trees left behind after the window has already closed.
@@ -754,7 +715,31 @@ fn classify_windows_codex_processes(processes: &[WindowsCodexProcess]) -> (Vec<u
     (active_pids, ignored_count)
 }
 
+/// A headless codex.exe can be a live terminal session. Do not classify these
+/// as abandoned GUI roots. Daemons, IDE helpers and known GUI installations
+/// retain their existing, separate detection rules.
 #[cfg(any(windows, test))]
+fn is_windows_codex_cli_session(process: &WindowsCodexProcess) -> bool {
+    if !process.name.eq_ignore_ascii_case("codex.exe") {
+        return false;
+    }
+    let command = normalize_windows_path(&process.command_line);
+    if command.contains("--type=")
+        || command.contains("--managed-daemon")
+        || command.contains(" app-server")
+        || command.contains(" exec-server")
+        || is_ide_plugin_process(&command)
+    {
+        return false;
+    }
+    let path = normalize_windows_path(&process.executable_path);
+    !path.is_empty()
+        && !path.contains("\\resources\\")
+        && !path.contains("\\windowsapps\\")
+        && !path.contains("\\programs\\codex\\")
+}
+
+#[cfg(test)]
 fn parse_windows_codex_processes(stdout: &str) -> anyhow::Result<Vec<WindowsCodexProcess>> {
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
@@ -782,7 +767,7 @@ fn is_windows_codex_root_process(process: &WindowsCodexProcess) -> bool {
     let name = process.name.to_ascii_lowercase();
     let command = normalize_windows_path(&process.command_line);
 
-    if command.contains("codex-switcher") || command.contains("--type=") {
+    if command.contains("--type=") {
         return false;
     }
 
@@ -1108,6 +1093,30 @@ mod tests {
         assert_eq!(
             classify_windows_codex_processes(&processes),
             (vec![100, 200], 0)
+        );
+    }
+
+    #[test]
+    fn windows_interactive_cli_blocks_switch_but_managed_daemon_does_not() {
+        let cli = windows_process(
+            "codex.exe",
+            301,
+            1,
+            r"C:\Users\test\.cargo\bin\codex.exe",
+            r#""C:\Users\test\.cargo\bin\codex.exe" --model o3 -C C:\dev\codex-switcher"#,
+            "",
+        );
+        let daemon = windows_process(
+            "codex.exe",
+            302,
+            1,
+            r"C:\Users\test\.cargo\bin\codex.exe",
+            r#""C:\Users\test\.cargo\bin\codex.exe" app-server --managed-daemon"#,
+            "",
+        );
+        assert_eq!(
+            classify_windows_codex_processes(&[cli, daemon]),
+            (vec![301], 1)
         );
     }
 

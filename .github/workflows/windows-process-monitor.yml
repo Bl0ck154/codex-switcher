@@ -1,0 +1,36 @@
+name: Windows native process monitor
+
+on:
+  pull_request:
+    paths:
+      - "src-tauri/src/commands/process.rs"
+      - "src-tauri/src/commands/windows_process_snapshot.rs"
+      - "src-tauri/src/commands/cli_daemon.rs"
+      - "src-tauri/src/commands/account.rs"
+      - "src-tauri/Cargo.toml"
+      - "src/App.tsx"
+      - ".github/workflows/windows-process-monitor.yml"
+  workflow_dispatch:
+
+jobs:
+  windows-native:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck and build UI
+        run: pnpm build
+      - name: Test Windows process detection and account switching
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib --target x86_64-pc-windows-msvc
+      - name: Compile Windows desktop executable
+        run: cargo check --manifest-path src-tauri/Cargo.toml --bin codex-switcher --target x86_64-pc-windows-msvc

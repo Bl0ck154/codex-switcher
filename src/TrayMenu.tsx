@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { AccountInfo, AccountUsageStats, DockDisplayMode, UsageInfo } from "./types";
 import { invokeBackend, isTauriRuntime } from "./lib/platform";
+import { mapInBatches } from "./lib/mapInBatches";
 import {
   applyTheme,
   syncThemeFromStorage,
@@ -134,51 +135,63 @@ function TrayMenu() {
   const [refreshing, setRefreshing] = useState(false);
   const [autoWarmupAllEnabled, setAutoWarmupAllEnabled] = useState(readAutoWarmupAllEnabled);
   const [dockDisplayMode, setDockDisplayMode] = useState<DockDisplayMode | null>(null);
+  const usageGeneration = useRef(0);
+  const statsGeneration = useRef(0);
+  const trayActive = useRef(false);
 
-  // Fetch each account's rate-limit usage in parallel; rows fill in as they land.
+  // Limit concurrent auth-bound usage calls. One state update per small
+  // batch avoids a whole tray re-render for each account response.
   const loadUsage = useCallback(async (list: AccountInfo[]) => {
-    await Promise.all(
-      list.map(async (account) => {
+    const generation = ++usageGeneration.current;
+    await mapInBatches(
+      list,
+      3,
+      async (account): Promise<readonly [string, UsageInfo]> => {
         try {
-          const usage = await invokeBackend<UsageInfo>("get_usage", {
+          return [account.id, await invokeBackend<UsageInfo>("get_usage", {
             accountId: account.id,
-          });
-          setUsageById((prev) => ({ ...prev, [account.id]: usage }));
+          })];
         } catch (err) {
-          setUsageById((prev) => ({
-            ...prev,
-            [account.id]: {
-              account_id: account.id,
-              plan_type: account.plan_type,
-              primary_used_percent: null,
-              primary_window_minutes: null,
-              primary_resets_at: null,
-              secondary_used_percent: null,
-              secondary_window_minutes: null,
-              secondary_resets_at: null,
-              has_credits: null,
-              unlimited_credits: null,
-              credits_balance: null,
-              error: formatError(err),
-            },
-          }));
+          return [account.id, {
+            account_id: account.id,
+            plan_type: account.plan_type,
+            primary_used_percent: null,
+            primary_window_minutes: null,
+            primary_resets_at: null,
+            secondary_used_percent: null,
+            secondary_window_minutes: null,
+            secondary_resets_at: null,
+            has_credits: null,
+            unlimited_credits: null,
+            credits_balance: null,
+            error: formatError(err),
+          }];
         }
-      })
+      },
+      (batch) => {
+        if (generation !== usageGeneration.current) return;
+        setUsageById((prev) => ({ ...prev, ...Object.fromEntries(batch) }));
+      },
+      () => generation === usageGeneration.current,
     );
   }, []);
 
   const loadActiveStats = useCallback(async (list: AccountInfo[]) => {
+    const generation = ++statsGeneration.current;
     const active = list.find((account) => account.is_active);
-    if (!active) return;
+    if (!active) {
+      setStatsById({});
+      return;
+    }
 
     try {
       const stats = await invokeBackend<AccountUsageStats>("get_account_usage_stats", {
         accountId: active.id,
       });
-      setStatsById((prev) => ({ ...prev, [active.id]: stats }));
+      if (generation === statsGeneration.current) setStatsById({ [active.id]: stats });
     } catch (err) {
-      setStatsById((prev) => ({
-        ...prev,
+      if (generation !== statsGeneration.current) return;
+      setStatsById({
         [active.id]: {
           account_id: active.id,
           available: false,
@@ -205,7 +218,7 @@ function TrayMenu() {
           reset_credits: null,
           error: formatError(err),
         },
-      }));
+      });
     }
   }, []);
 
@@ -222,6 +235,7 @@ function TrayMenu() {
     try {
       void loadDockDisplayMode();
       const list = await invokeBackend<AccountInfo[]>("list_accounts");
+      if (!trayActive.current) return;
       setAccounts(list);
       setUsageById((prev) => retainUsageForAccounts(prev, list));
       setError(null);
@@ -285,35 +299,81 @@ function TrayMenu() {
   // Reload when the tray is reopened or accounts change elsewhere.
   useEffect(() => {
     if (!isTauriRuntime()) return;
+    let disposed = false;
     let unlistenRefresh: (() => void) | undefined;
     let unlistenChanged: (() => void) | undefined;
     let unlistenTheme: (() => void) | undefined;
     let unlistenAutoWarmup: (() => void) | undefined;
 
+    const markHidden = () => {
+      trayActive.current = false;
+      usageGeneration.current += 1;
+      statsGeneration.current += 1;
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") markHidden();
+    };
+    window.addEventListener("blur", markHidden);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    // The Windows popup is created lazily and may miss its first tray-refresh
+    // event before React installs the listener. Prime the first visible mount.
+    if (/Windows/i.test(navigator.userAgent)) {
+      trayActive.current = true;
+      void load();
+    }
+
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
-      unlistenRefresh = await listen(TRAY_REFRESH_EVENT, () => {
-        syncThemeFromStorage();
-        setAutoWarmupAllEnabled(readAutoWarmupAllEnabled());
-        void load();
-      });
-      unlistenChanged = await listen(ACCOUNTS_CHANGED_EVENT, () => void load());
-      unlistenTheme = await listen<ThemeMode>(THEME_CHANGED_EVENT, ({ payload }) => {
-        if (payload === "light" || payload === "dark") {
-          applyTheme(payload);
-        }
-      });
-      unlistenAutoWarmup = await listen<boolean>(
-        AUTO_WARMUP_ALL_CHANGED_EVENT,
-        ({ payload }) => {
-          if (typeof payload === "boolean") {
-            setAutoWarmupAllEnabled(payload);
-          }
-        }
-      );
-    })();
+      const subscriptions: Array<() => void> = [];
+      const register = async <T,>(
+        name: string,
+        callback: (event: { payload: T }) => void,
+      ): Promise<() => void> => {
+        const unsubscribe = await listen<T>(name, callback);
+        let closed = false;
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          unsubscribe();
+        };
+        subscriptions.push(close);
+        return close;
+      };
+
+      try {
+        unlistenRefresh = await register(TRAY_REFRESH_EVENT, () => {
+          trayActive.current = true;
+          syncThemeFromStorage();
+          setAutoWarmupAllEnabled(readAutoWarmupAllEnabled());
+          void load();
+        });
+        if (disposed) return;
+        unlistenChanged = await register(ACCOUNTS_CHANGED_EVENT, () => {
+          if (trayActive.current) void load();
+        });
+        if (disposed) return;
+        unlistenTheme = await register<ThemeMode>(THEME_CHANGED_EVENT, ({ payload }) => {
+          if (payload === "light" || payload === "dark") applyTheme(payload);
+        });
+        if (disposed) return;
+        unlistenAutoWarmup = await register<boolean>(
+          AUTO_WARMUP_ALL_CHANGED_EVENT,
+          ({ payload }) => {
+            if (typeof payload === "boolean") setAutoWarmupAllEnabled(payload);
+          },
+        );
+      } finally {
+        if (disposed) subscriptions.forEach((unsubscribe) => unsubscribe());
+      }
+    })().catch((error) => console.warn("Tray listeners failed:", error));
 
     return () => {
+      disposed = true;
+      usageGeneration.current += 1;
+      statsGeneration.current += 1;
+      window.removeEventListener("blur", markHidden);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       unlistenRefresh?.();
       unlistenChanged?.();
       unlistenTheme?.();

@@ -39,7 +39,10 @@ pub fn report_usage(app: AppHandle, usages: Vec<UsageInfo>) {
 #[tauri::command]
 pub fn hide_tray_window(app: AppHandle) {
     if let Some(window) = app.get_webview_window(TRAY_WINDOW) {
-        let _ = window.hide();
+        if window.hide().is_ok() {
+            #[cfg(target_os = "windows")]
+            crate::tray::popup_hidden(&app);
+        }
     }
 }
 
@@ -51,7 +54,10 @@ pub fn open_main_window(app: AppHandle) {
 
 pub fn hide_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.hide();
+        if window.hide().is_ok() {
+            #[cfg(target_os = "windows")]
+            crate::tray::main_window_memory_target(app, true);
+        }
     }
     #[cfg(target_os = "macos")]
     let _ = app.hide();
@@ -84,9 +90,14 @@ pub fn schedule_close_behavior_prompt_fallback<R: Runtime>(app: AppHandle<R>, re
 /// Bring the main window to the foreground and hide the tray popup.
 pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Some(tray) = app.get_webview_window(TRAY_WINDOW) {
-        let _ = tray.hide();
+        if tray.hide().is_ok() {
+            #[cfg(target_os = "windows")]
+            crate::tray::popup_hidden(app);
+        }
     }
     if let Some(window) = app.get_webview_window("main") {
+        #[cfg(target_os = "windows")]
+        crate::tray::main_window_memory_target(app, false);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();

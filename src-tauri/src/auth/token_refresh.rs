@@ -554,13 +554,14 @@ async fn refresh_tokens_with_refresh_token_at(
     endpoint: &str,
     timeout: Duration,
 ) -> Result<RefreshTokenResponse> {
-    let client = reqwest::Client::new();
+    let client = crate::api::request_cache::client();
     let body = format!(
         "grant_type=refresh_token&refresh_token={}&client_id={}",
         urlencoding::encode(refresh_token),
         urlencoding::encode(CLIENT_ID),
     );
 
+    crate::api::request_cache::record_outbound_request();
     let response = client
         .post(endpoint)
         .timeout(timeout)

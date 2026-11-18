@@ -10,6 +10,7 @@ import { invokeBackend, isTauriRuntime, type FileSource } from "../lib/platform"
 import { completeOAuthWithoutBlockingOnUsage } from "../lib/oauthCompletion";
 import { completeImportWithoutBlockingOnUsage } from "../lib/accountImportCompletion";
 import { retryBusyUsage } from "../lib/retryBusyUsage";
+import { reconcileAccounts, sameUsage } from "../lib/accountState";
 
 export function useAccounts() {
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
@@ -80,21 +81,7 @@ export function useAccounts() {
       setError(null);
       const accountList = await invokeBackend<AccountInfo[]>("list_accounts");
       
-      if (preserveUsage) {
-        // Preserve existing usage data when just updating account info
-        setAccounts((prev) => {
-          const usageMap = new Map(
-            prev.map((a) => [a.id, { usage: a.usage, usageLoading: a.usageLoading }])
-          );
-          return accountList.map((a) => ({
-            ...a,
-            usage: usageMap.get(a.id)?.usage,
-            usageLoading: usageMap.get(a.id)?.usageLoading,
-          }));
-        });
-      } else {
-        setAccounts(accountList.map((a) => ({ ...a, usageLoading: false })));
-      }
+      setAccounts((prev) => reconcileAccounts(prev, accountList, preserveUsage));
       return accountList;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -119,6 +106,7 @@ export function useAccounts() {
         metadataRefreshInFlightRef.current.add(account.id);
       });
 
+      const metadataById = new Map<string, AccountInfo>();
       await runWithConcurrency(
         dueAccounts,
         async (account) => {
@@ -126,17 +114,7 @@ export function useAccounts() {
             const metadata = await invokeBackend<AccountInfo>("refresh_account_metadata", {
               accountId: account.id,
             });
-            setAccounts((prev) =>
-              prev.map((item) =>
-                item.id === account.id
-                  ? {
-                      ...item,
-                      plan_type: metadata.plan_type,
-                      subscription_expires_at: metadata.subscription_expires_at,
-                    }
-                  : item
-              )
-            );
+            metadataById.set(account.id, metadata);
           } catch (err) {
             console.warn("Failed to refresh account metadata:", err);
           } finally {
@@ -146,6 +124,27 @@ export function useAccounts() {
         1,
         250
       );
+
+      if (metadataById.size) {
+        // One batched state update, not N full-list updates for N accounts.
+        setAccounts((prev) => {
+          let changed = false;
+          const next = prev.map((item) => {
+            const metadata = metadataById.get(item.id);
+            if (!metadata || (
+              item.plan_type === metadata.plan_type &&
+              item.subscription_expires_at === metadata.subscription_expires_at
+            )) return item;
+            changed = true;
+            return {
+              ...item,
+              plan_type: metadata.plan_type,
+              subscription_expires_at: metadata.subscription_expires_at,
+            };
+          });
+          return changed ? next : prev;
+        });
+      }
     },
     [runWithConcurrency]
   );
@@ -153,7 +152,7 @@ export function useAccounts() {
   const refreshUsage = useCallback(
     async (
       accountList?: AccountInfo[] | AccountWithUsage[],
-      options?: { refreshMetadata?: boolean }
+      options?: { refreshMetadata?: boolean; silent?: boolean }
     ) => {
       try {
         const list = accountList ?? accountsRef.current;
@@ -166,13 +165,15 @@ export function useAccounts() {
         const accountIdSet = new Set(accountIds);
         const usageResults = new Map<string, UsageInfo>();
 
-        setAccounts((prev) =>
-          prev.map((account) =>
-            accountIdSet.has(account.id)
-              ? { ...account, usageLoading: true }
-              : account
-          )
-        );
+        if (!options?.silent) {
+          setAccounts((prev) =>
+            prev.map((account) =>
+              accountIdSet.has(account.id) && !account.usageLoading
+                ? { ...account, usageLoading: true }
+                : account
+            )
+          );
+        }
 
         await runWithConcurrency(
           list,
@@ -199,9 +200,13 @@ export function useAccounts() {
           prev.map((account) => {
             const usage = usageResults.get(account.id);
             if (!usage) return account;
+            // Focused/manual refreshes still update the card's "Last updated"
+            // indicator. Hidden polling can reuse identical usage objects.
+            const unchanged = Boolean(options?.silent) && sameUsage(account.usage, usage);
+            if (unchanged && account.usageLoading === false) return account;
             return {
               ...account,
-              usage,
+              usage: unchanged ? account.usage : usage,
               usageLoading: false,
             };
           })
@@ -452,41 +457,77 @@ export function useAccounts() {
   }, []);
 
   useEffect(() => {
-    loadAccounts().then(async (accountList) => {
-      await refreshUsage(accountList);
-      // Populate live expiry sequentially after usage requests complete.
-      void refreshMetadata(accountList);
-    });
-    
-    // Auto-refresh usage every 60 seconds (same as official Codex CLI)
-    const usageInterval = setInterval(() => {
-      refreshUsage().catch(() => {});
-    }, 60000);
+    let cancelled = false;
+    let usageTimer: ReturnType<typeof setTimeout> | undefined;
+
+    // This poll is needed even while the window is hidden: auto warm-up reads
+    // current quotas from the same account state. Serialize cycles instead of
+    // stacking requests if a large account list takes over 60 seconds to load.
+    const schedulePoll = () => {
+      if (!cancelled) usageTimer = setTimeout(() => void pollUsage(), 60_000);
+    };
+    const pollUsage = async () => {
+      try {
+        // Suppress per-card loading animations for an unfocused/hidden main
+        // window while still feeding fresh quotas to automatic warm-up.
+        const silent = typeof document !== "undefined" &&
+          (document.visibilityState === "hidden" || !document.hasFocus());
+        await refreshUsage(undefined, { silent });
+      } catch (error) {
+        console.warn("Automatic usage refresh failed:", error);
+      } finally {
+        schedulePoll();
+      }
+    };
+
+    void (async () => {
+      const accountList = await loadAccounts();
+      if (cancelled) return;
+      try {
+        await refreshUsage(accountList);
+      } catch (error) {
+        console.warn("Initial usage refresh failed:", error);
+      } finally {
+        if (!cancelled) {
+          // Expiry fetch remains sequential behind the initial quota fetch.
+          void refreshMetadata(accountList);
+          schedulePoll();
+        }
+      }
+    })();
 
     const metadataInterval = !isTauriRuntime()
       ? setInterval(() => {
-          refreshMetadata().catch(() => {});
+          void refreshMetadata().catch(() => {});
         }, 6 * 60 * 60 * 1000)
       : undefined;
-    
+
     return () => {
-      clearInterval(usageInterval);
+      cancelled = true;
+      if (usageTimer !== undefined) clearTimeout(usageTimer);
       if (metadataInterval !== undefined) clearInterval(metadataInterval);
     };
   }, [loadAccounts, refreshMetadata, refreshUsage]);
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
 
     void (async () => {
-      if (!("__TAURI_INTERNALS__" in window)) return;
+      if (!isTauriRuntime()) return;
       const { listen } = await import("@tauri-apps/api/event");
-      unlisten = await listen("accounts-changed", () => {
+      const unsubscribe = await listen("accounts-changed", () => {
         void loadAccounts(true);
       });
-    })();
+      // The asynchronous subscription may resolve after unmount / StrictMode cleanup.
+      if (disposed) unsubscribe();
+      else unlisten = unsubscribe;
+    })().catch((error) => console.warn("Failed to listen for account updates:", error));
 
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [loadAccounts]);
 
   return {

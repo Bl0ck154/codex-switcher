@@ -382,7 +382,11 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
 fn save_accounts_unlocked(store: &AccountsStore) -> Result<()> {
     let path = get_accounts_file()?;
     let content = serde_json::to_vec_pretty(store).context("Failed to serialize accounts store")?;
-    write_file_atomic(&path, &content)
+    write_file_atomic(&path, &content)?;
+    // Every persisted account change may affect auth, workspace selection,
+    // quota identity, or metadata. Retire in-flight reads at this boundary.
+    crate::api::request_cache::invalidate_all();
+    Ok(())
 }
 
 /// Apply one logical account-store mutation and persist its resulting snapshot.

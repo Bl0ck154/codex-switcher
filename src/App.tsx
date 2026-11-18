@@ -207,6 +207,7 @@ function App() {
   const [switchingId, setSwitchingId] = useState<string | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [processInfo, setProcessInfo] = useState<CodexProcessInfo | null>(null);
+  const processCheckRequestRef = useRef(0);
   const [pendingSwitchAccountId, setPendingSwitchAccountId] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isOpeningCodex, setIsOpeningCodex] = useState(false);
@@ -436,35 +437,74 @@ function App() {
     });
   };
 
+  // Safety checks always go to the backend; only out-of-order UI updates are ignored.
   const checkProcesses = useCallback(async () => {
+    const request = ++processCheckRequestRef.current;
     try {
       const info = await invokeBackend<CodexProcessInfo>("check_codex_processes");
-      setProcessInfo((prev) => {
-        if (
-          prev &&
-          prev.can_switch === info.can_switch &&
-          prev.count === info.count &&
-          prev.background_count === info.background_count &&
-          prev.cli_daemon_running === info.cli_daemon_running &&
-          prev.pids.length === info.pids.length &&
-          prev.pids.every((pid, index) => pid === info.pids[index])
-        ) {
-          return prev;
-        }
-        return info;
-      });
+      if (request === processCheckRequestRef.current) {
+        setProcessInfo((prev) => {
+          if (
+            prev &&
+            prev.can_switch === info.can_switch &&
+            prev.count === info.count &&
+            prev.background_count === info.background_count &&
+            prev.cli_daemon_running === info.cli_daemon_running &&
+            prev.pids.length === info.pids.length &&
+            prev.pids.every((pid, index) => pid === info.pids[index])
+          ) {
+            return prev;
+          }
+          return info;
+        });
+      }
       return info;
     } catch (err) {
       console.error("Failed to check processes:", err);
+      if (request === processCheckRequestRef.current) setProcessInfo(null);
       return null;
     }
   }, []);
 
-  // Check processes on mount and periodically
+  // One non-overlapping background poller; refresh promptly when the window regains focus.
+  // Manual switches and the backend's guarded switch bypass this polling cadence.
   useEffect(() => {
-    checkProcesses();
-    const interval = setInterval(checkProcesses, 5000);
-    return () => clearInterval(interval);
+    let disposed = false;
+    let running = false;
+    let refreshRequested = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const scan = async () => {
+      if (disposed) return;
+      if (running) {
+        refreshRequested = true;
+        return;
+      }
+      if (timer !== undefined) clearTimeout(timer);
+      running = true;
+      const info = await checkProcesses();
+      running = false;
+      if (disposed) return;
+      if (refreshRequested) {
+        refreshRequested = false;
+        void scan();
+        return;
+      }
+      const interval = document.hidden ? 60_000 : info?.count ? 12_000 : 30_000;
+      timer = window.setTimeout(() => void scan(), interval);
+    };
+    const onVisible = () => {
+      if (!document.hidden) void scan();
+    };
+    void scan();
+    window.addEventListener("focus", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      disposed = true;
+      if (timer !== undefined) clearTimeout(timer);
+      window.removeEventListener("focus", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [checkProcesses]);
 
   // Load masked accounts from storage on mount

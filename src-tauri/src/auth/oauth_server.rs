@@ -97,7 +97,7 @@ async fn exchange_code_for_tokens(
     pkce: &PkceCodes,
     code: &str,
 ) -> Result<TokenResponse> {
-    let client = reqwest::Client::new();
+    let client = crate::api::request_cache::client();
 
     let body = format!(
         "grant_type=authorization_code&code={}&redirect_uri={}&client_id={}&code_verifier={}",
@@ -107,6 +107,7 @@ async fn exchange_code_for_tokens(
         urlencoding::encode(&pkce.code_verifier)
     );
 
+    crate::api::request_cache::record_outbound_request();
     let resp = client
         .post(format!("{issuer}/oauth/token"))
         // A stalled token endpoint must not leave "Waiting for browser login"
