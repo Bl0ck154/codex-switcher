@@ -210,11 +210,23 @@ pub(super) fn read() -> anyhow::Result<Vec<WindowsCodexProcess>> {
         if unsafe { WaitForSingleObject(handle.0, 0) } != WAIT_TIMEOUT {
             continue;
         }
-        let path = executable_path(handle.0)?;
+        let path = match executable_path(handle.0) {
+            Ok(path) => path,
+            Err(_error) if unsafe { WaitForSingleObject(handle.0, 0) } != WAIT_TIMEOUT => {
+                continue; // Exited while inspecting.
+            }
+            Err(error) => return Err(error),
+        };
         if !path.rsplit(['\\', '/']).next().is_some_and(|actual| actual.eq_ignore_ascii_case(&name)) {
             continue; // PID reused for a different executable.
         }
-        let command = command_line(handle.0)?;
+        let command = match command_line(handle.0) {
+            Ok(command) => command,
+            Err(_error) if unsafe { WaitForSingleObject(handle.0, 0) } != WAIT_TIMEOUT => {
+                continue; // Exited while querying the command line.
+            }
+            Err(error) => return Err(error),
+        };
         if command.is_empty() {
             bail!("Missing command line for candidate PID {pid}");
         }
