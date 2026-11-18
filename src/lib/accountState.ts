@@ -1,4 +1,4 @@
-import type { AccountInfo, AccountWithUsage } from "../types";
+import type { AccountInfo, AccountWithUsage, UsageInfo } from "../types";
 
 const ACCOUNT_FIELDS: (keyof AccountInfo)[] = [
   "id", "name", "email", "plan_type", "subscription_expires_at",
@@ -28,4 +28,28 @@ export function reconcileAccounts(
     next.every((account, index) => account === previous[index])
     ? previous
     : next;
+}
+
+const USAGE_FIELDS: (Exclude<keyof UsageInfo, "luna_reserve">)[] = [
+  "account_id", "plan_type", "primary_used_percent", "primary_window_minutes",
+  "primary_resets_at", "secondary_used_percent", "secondary_window_minutes",
+  "secondary_resets_at", "has_credits", "unlimited_credits", "credits_balance", "error",
+];
+
+// A new IPC object need not invalidate every card if the displayed quota did
+// not change. Compare the optional reserve separately instead of stringifying.
+export function sameUsage(previous: UsageInfo | undefined, incoming: UsageInfo): boolean {
+  if (previous === incoming) return true;
+  if (!previous || !USAGE_FIELDS.every((field) => previous[field] === incoming[field])) {
+    return false;
+  }
+  const a = previous.luna_reserve;
+  const b = incoming.luna_reserve;
+  if (a == null || b == null) return a == null && b == null;
+  return a.normal_model_slug === b.normal_model_slug &&
+    a.allowed === b.allowed &&
+    a.limit_reached === b.limit_reached &&
+    a.used_percent === b.used_percent &&
+    a.window_minutes === b.window_minutes &&
+    a.resets_at === b.resets_at;
 }
