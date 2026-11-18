@@ -17,8 +17,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 
-use crate::types::{AuthData, StoredAccount};
 use super::usage::ChatGptAccountMetadata;
+use crate::types::{AuthData, StoredAccount};
 
 const MAX_ENTRIES: usize = 128;
 const MAX_FLIGHTS: usize = 128;
@@ -78,7 +78,8 @@ fn key_for(account: &StoredAccount, endpoint: Endpoint) -> Option<Key> {
         access_token,
         account_id,
         ..
-    } = &account.auth_data else {
+    } = &account.auth_data
+    else {
         return None;
     };
 
@@ -130,7 +131,9 @@ pub struct CacheMetrics {
 
 impl RequestCache {
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.inner.lock().unwrap_or_else(|poison| poison.into_inner())
+        self.inner
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
     }
 
     fn prune(state: &mut State) {
@@ -138,7 +141,9 @@ impl RequestCache {
         state.entries.retain(|_, entry| entry.expires_at > now);
         state.metadata.retain(|_, (expires, _)| *expires > now);
         // Do not evict in-flight locks: their waiters must remain deduplicated.
-        state.flights.retain(|_, flight| Arc::strong_count(flight) > 1);
+        state
+            .flights
+            .retain(|_, flight| Arc::strong_count(flight) > 1);
     }
 
     fn lookup<T: Clone + Send + Sync + 'static>(state: &mut State, key: &Key) -> Option<T> {
@@ -152,9 +157,25 @@ impl RequestCache {
     }
 
     fn bytes(state: &State) -> usize {
-        state.entries.iter().map(|(key, value)| value.approx_bytes + key.account_id.len()).sum::<usize>()
-            + state.flights.keys().map(|key| key.account_id.len() + size_of::<Key>() + size_of::<AsyncMutex<()>>()).sum::<usize>()
-            + state.metadata.iter().map(|(id, (_, m))| id.len() + size_of::<ChatGptAccountMetadata>() + m.plan_type.as_ref().map_or(0, String::len)).sum::<usize>()
+        state
+            .entries
+            .iter()
+            .map(|(key, value)| value.approx_bytes + key.account_id.len())
+            .sum::<usize>()
+            + state
+                .flights
+                .keys()
+                .map(|key| key.account_id.len() + size_of::<Key>() + size_of::<AsyncMutex<()>>())
+                .sum::<usize>()
+            + state
+                .metadata
+                .iter()
+                .map(|(id, (_, m))| {
+                    id.len()
+                        + size_of::<ChatGptAccountMetadata>()
+                        + m.plan_type.as_ref().map_or(0, String::len)
+                })
+                .sum::<usize>()
     }
 
     fn insert<T: Serialize + Clone + Send + Sync + 'static>(
@@ -174,20 +195,32 @@ impl RequestCache {
         }
         state.entries.remove(&key);
         while state.entries.len() >= MAX_ENTRIES
-            || state.entries.values().map(|entry| entry.approx_bytes).sum::<usize>() + bytes > MAX_CACHE_BYTES
+            || state
+                .entries
+                .values()
+                .map(|entry| entry.approx_bytes)
+                .sum::<usize>()
+                + bytes
+                > MAX_CACHE_BYTES
         {
-            let Some(oldest) = state.entries.iter()
+            let Some(oldest) = state
+                .entries
+                .iter()
                 .min_by_key(|(_, entry)| entry.expires_at)
-                .map(|(key, _)| key.clone()) else {
-                    break;
-                };
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
             state.entries.remove(&oldest);
         }
-        state.entries.insert(key, Entry {
-            value: Arc::new(value),
-            expires_at: Instant::now() + ttl,
-            approx_bytes: bytes,
-        });
+        state.entries.insert(
+            key,
+            Entry {
+                value: Arc::new(value),
+                expires_at: Instant::now() + ttl,
+                approx_bytes: bytes,
+            },
+        );
     }
 
     pub fn invalidate(&self) {
@@ -258,7 +291,9 @@ impl RequestCache {
         {
             let mut state = self.state();
             if state.epoch != epoch {
-                return Err(anyhow!("Account data changed while request was queued; retry"));
+                return Err(anyhow!(
+                    "Account data changed while request was queued; retry"
+                ));
             }
             if let Some(value) = Self::lookup(&mut state, &key) {
                 return Ok(value);
@@ -293,7 +328,10 @@ impl RequestCache {
         };
         let mut state = self.state();
         Self::insert(&mut state, key, METADATA_TTL, data.clone());
-        state.metadata.insert(account.id.clone(), (Instant::now() + METADATA_TTL, data.clone()));
+        state.metadata.insert(
+            account.id.clone(),
+            (Instant::now() + METADATA_TTL, data.clone()),
+        );
     }
 }
 
@@ -327,14 +365,16 @@ where
     Fut: Future<Output = Result<T>>,
     P: Fn(&T) -> bool,
 {
-    CACHE.get_or_fetch(account, endpoint, ttl, cacheable, fetch).await
+    CACHE
+        .get_or_fetch(account, endpoint, ttl, cacheable, fetch)
+        .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use crate::types::AuthMode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn account(token: &str) -> StoredAccount {
         StoredAccount {
@@ -366,13 +406,21 @@ mod tests {
             let calls = &calls;
             let a = &account;
             async move {
-                c.get_or_fetch(a, Endpoint::Usage, USAGE_TTL, |_| true, || async {
-                    calls.fetch_add(1, Ordering::SeqCst);
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                    Ok(42usize)
-                }).await
+                c.get_or_fetch(
+                    a,
+                    Endpoint::Usage,
+                    USAGE_TTL,
+                    |_| true,
+                    || async {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                        Ok(42usize)
+                    },
+                )
+                .await
             }
-        })).await;
+        }))
+        .await;
         assert!(results.iter().all(|value| matches!(value, Ok(42))));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(cache.metrics().fetches, 1);
@@ -384,14 +432,43 @@ mod tests {
         let cache = RequestCache::default();
         let a = account("token-a");
         let b = account("token-b");
-        let first = cache.get_or_fetch(&a, Endpoint::ResetCredits, RESET_CREDITS_TTL, |_| true,
-            || async { Err::<usize, _>(anyhow!("HTTP 503")) }).await;
+        let first = cache
+            .get_or_fetch(
+                &a,
+                Endpoint::ResetCredits,
+                RESET_CREDITS_TTL,
+                |_| true,
+                || async { Err::<usize, _>(anyhow!("HTTP 503")) },
+            )
+            .await;
         assert!(first.is_err());
         assert_eq!(cache.metrics().cache_entries, 0);
-        assert_eq!(cache.get_or_fetch(&a, Endpoint::ResetCredits, RESET_CREDITS_TTL, |_| true,
-            || async { Ok::<usize, anyhow::Error>(1) }).await.unwrap(), 1);
-        assert_eq!(cache.get_or_fetch(&b, Endpoint::ResetCredits, RESET_CREDITS_TTL, |_| true,
-            || async { Ok::<usize, anyhow::Error>(2) }).await.unwrap(), 2);
+        assert_eq!(
+            cache
+                .get_or_fetch(
+                    &a,
+                    Endpoint::ResetCredits,
+                    RESET_CREDITS_TTL,
+                    |_| true,
+                    || async { Ok::<usize, anyhow::Error>(1) }
+                )
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            cache
+                .get_or_fetch(
+                    &b,
+                    Endpoint::ResetCredits,
+                    RESET_CREDITS_TTL,
+                    |_| true,
+                    || async { Ok::<usize, anyhow::Error>(2) }
+                )
+                .await
+                .unwrap(),
+            2
+        );
         assert_eq!(cache.metrics().cache_entries, 2);
     }
 
@@ -401,10 +478,17 @@ mod tests {
         let acc = account("token-a");
         let c = cache.clone();
         let task = tokio::spawn(async move {
-            c.get_or_fetch(&acc, Endpoint::Stats, STATS_TTL, |_| true, || async {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                Ok::<_, anyhow::Error>(7usize)
-            }).await
+            c.get_or_fetch(
+                &acc,
+                Endpoint::Stats,
+                STATS_TTL,
+                |_| true,
+                || async {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Ok::<_, anyhow::Error>(7usize)
+                },
+            )
+            .await
         });
         tokio::time::sleep(Duration::from_millis(20)).await;
         cache.invalidate();
@@ -416,8 +500,16 @@ mod tests {
     async fn expiry_and_memory_limit() {
         let cache = RequestCache::default();
         let acc = account("token-a");
-        cache.get_or_fetch(&acc, Endpoint::Stats, Duration::from_millis(5), |_| true,
-            || async { Ok::<_, anyhow::Error>(vec![0u8; 1024]) }).await.unwrap();
+        cache
+            .get_or_fetch(
+                &acc,
+                Endpoint::Stats,
+                Duration::from_millis(5),
+                |_| true,
+                || async { Ok::<_, anyhow::Error>(vec![0u8; 1024]) },
+            )
+            .await
+            .unwrap();
         assert!(cache.metrics().cache_bytes_estimate < MAX_CACHE_BYTES);
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(cache.metrics().cache_entries, 0);
@@ -428,8 +520,16 @@ mod tests {
         let cache = RequestCache::default();
         for n in 0..300 {
             let a = account(&format!("access-{n}"));
-            cache.get_or_fetch(&a, Endpoint::Usage, USAGE_TTL, |_| true,
-                || async { Ok::<_, anyhow::Error>([0u8; 128].to_vec()) }).await.unwrap();
+            cache
+                .get_or_fetch(
+                    &a,
+                    Endpoint::Usage,
+                    USAGE_TTL,
+                    |_| true,
+                    || async { Ok::<_, anyhow::Error>([0u8; 128].to_vec()) },
+                )
+                .await
+                .unwrap();
         }
         let m = cache.metrics();
         assert!(m.cache_entries <= MAX_ENTRIES);
