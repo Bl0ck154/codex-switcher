@@ -213,8 +213,8 @@ pub async fn complete_login(force_replace: Option<bool>) -> Result<AccountInfo, 
                     super::cli_daemon::stop_cli_daemon_if_running(daemon_home)
                 })
                 .await
-                        .map_err(anyhow::Error::from)
-                        .and_then(|result| result);
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result);
                 if let Err(error) = stopped {
                     #[cfg(windows)]
                     return Err(format!(
