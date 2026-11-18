@@ -102,4 +102,22 @@ try {
 } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
 }
+# Live Windows API smoke test: verifies real CIM ancestry and Get-Process counters,
+# without requiring Codex Switcher, its accounts, a GUI, or WebView2.
+if ($env:OS -eq 'Windows_NT') {
+    $own = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $PID"
+    Assert-True ($null -ne $own) 'CIM can inspect the current PowerShell process'
+    $created = ([datetime]$own.CreationDate).ToUniversalTime()
+    $liveSeen = @{}
+    $liveCpu = @{}
+    $lastTime = $null
+    $lastRef = [ref]$lastTime
+    $shot1 = Get-PerfSnapshot -RootPid $PID -RootCreationDate $created -Seen $liveSeen -CpuHistory $liveCpu -PreviousTime $lastRef -Stage smoke
+    Assert-True ($shot1.privateBytes -gt 0) 'Live Windows Private Bytes are positive'
+    Assert-True ($shot1.workingSetBytes -gt 0) 'Live Windows Working Set is positive'
+    Assert-True ($shot1.processCount -ge 1) 'Root is attributed in live snapshot'
+    Start-Sleep -Milliseconds 600
+    $shot2 = Get-PerfSnapshot -RootPid $PID -RootCreationDate $created -Seen $liveSeen -CpuHistory $liveCpu -PreviousTime $lastRef -Stage smoke
+    Assert-True ($null -ne $shot2.cpuPercent) 'CPU delta available for second live sample'
+}
 Write-Host 'Windows benchmark script tests: PASSED' -ForegroundColor Green
