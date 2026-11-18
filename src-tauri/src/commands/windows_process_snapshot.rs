@@ -220,6 +220,13 @@ pub(super) fn read() -> anyhow::Result<Vec<WindowsCodexProcess>> {
         if !path.rsplit(['\\', '/']).next().is_some_and(|actual| actual.eq_ignore_ascii_case(&name)) {
             continue; // PID reused for a different executable.
         }
+        // Unrelated ChatGPT desktop installations share the executable name.
+        // Skip them before the more privileged command-line query.
+        if name.eq_ignore_ascii_case("chatgpt.exe")
+            && !super::is_windows_codex_package_chatgpt_path(&path)
+        {
+            continue;
+        }
         let command = match command_line(handle.0) {
             Ok(command) => command,
             Err(_error) if unsafe { WaitForSingleObject(handle.0, 0) } != WAIT_TIMEOUT => {
