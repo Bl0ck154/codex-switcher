@@ -11,15 +11,16 @@ use crate::auth::get_codex_home;
 /// Whether the managed CLI daemon for the current Codex home is running.
 /// None where the daemon cannot be detected.
 pub(crate) fn is_cli_daemon_running() -> Option<bool> {
-    if cfg!(not(unix)) {
-        return None;
+    #[cfg(any(unix, windows))]
+    {
+        return get_codex_home()
+            .ok()
+            .map(|home| running_daemon_pid(&home).is_some());
     }
-
-    let running = get_codex_home()
-        .ok()
-        .and_then(|codex_home| running_daemon_pid(&codex_home))
-        .is_some();
-    Some(running)
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
 }
 
 /// Stop the managed CLI daemon so it cannot keep the previous account.
@@ -59,7 +60,7 @@ fn managed_codex_path(codex_home: &Path) -> PathBuf {
         .join("app-server-daemon")
         .join("current")
         .join("bin")
-        .join("codex")
+        .join(if cfg!(windows) { "codex.exe" } else { "codex" })
 }
 
 #[cfg(unix)]
@@ -72,8 +73,12 @@ fn read_process_command(pid: u32) -> Option<String> {
     (output.status.success() && !command.is_empty()).then_some(command)
 }
 
-// The daemon listens on a Unix socket; other platforms are not detected yet.
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn read_process_command(pid: u32) -> Option<String> {
+    super::process::read_windows_process_command(pid)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn read_process_command(_pid: u32) -> Option<String> {
     None
 }
