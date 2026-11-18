@@ -6,6 +6,7 @@ import type {
   UsageInfo,
 } from "../types";
 import { invokeBackend } from "../lib/platform";
+import { accountStatsCache } from "../lib/accountStatsCache";
 
 interface AccountUsageStatsProps {
   accountId: string;
@@ -166,7 +167,7 @@ function TokenActivity({ daily }: { daily: AccountDailyUsage[] }) {
   const [hoveredDate, setHoveredDate] = useState<string | null>(null);
   const bars = useMemo(() => recentDailyBars(daily, range), [daily, range]);
   const rangeDays = activityRangeDays(range, daily);
-  const maxTokens = Math.max(1, ...bars.map((day) => day.tokens));
+  const maxTokens = bars.reduce((max, day) => Math.max(max, day.tokens), 1);
 
   if (bars.length === 0 || !bars.some((day) => day.tokens > 0)) {
     return (
@@ -350,14 +351,17 @@ export function AccountUsageStats({
   usageLoading = false,
   onStatsLoaded,
 }: AccountUsageStatsProps) {
-  const [stats, setStats] = useState<AccountUsageStatsInfo | null>(null);
+  const [stats, setStats] = useState<AccountUsageStatsInfo | null>(
+    () => (enabled ? accountStatsCache.get(accountId) : null),
+  );
   const [loading, setLoading] = useState(false);
   const requestSeq = useRef(0);
   const backgroundInFlight = useRef(false);
+  const foregroundInFlight = useRef(false);
   const lastObservedUsage = useRef<UsageInfo | undefined>(usage);
 
   const loadStats = useCallback(async (background = false) => {
-    if (background && backgroundInFlight.current) return;
+    if (background && (backgroundInFlight.current || foregroundInFlight.current)) return;
     const requestId = ++requestSeq.current;
 
     if (!enabled) {
@@ -372,6 +376,7 @@ export function AccountUsageStats({
     if (background) {
       backgroundInFlight.current = true;
     } else {
+      foregroundInFlight.current = true;
       setLoading(true);
     }
     try {
@@ -381,6 +386,7 @@ export function AccountUsageStats({
       if (requestId !== requestSeq.current) return;
       if (background && (!next.available || next.error)) return;
       setStats(next);
+      accountStatsCache.set(next);
       onStatsLoaded?.(next);
     } catch (err) {
       if (background || requestId !== requestSeq.current) return;
@@ -390,18 +396,29 @@ export function AccountUsageStats({
     } finally {
       if (background) {
         backgroundInFlight.current = false;
-      } else if (requestId === requestSeq.current) {
-        setLoading(false);
+      } else {
+        foregroundInFlight.current = false;
+        if (requestId === requestSeq.current) setLoading(false);
       }
     }
   }, [accountId, enabled, onStatsLoaded]);
 
   useEffect(() => {
     requestSeq.current += 1;
-    setStats(null);
-    onStatsLoaded?.(null);
+    const cached = enabled ? accountStatsCache.get(accountId) : null;
+    setStats(cached);
+    onStatsLoaded?.(cached);
     setLoading(false);
-  }, [accountId, onStatsLoaded]);
+    // Invalidate late responses when an account changes or the panel unmounts.
+    return () => { requestSeq.current += 1; };
+  }, [accountId, enabled, onStatsLoaded]);
+
+  useEffect(() => {
+    if (!open || (enabled && accountStatsCache.get(accountId))) return;
+    // An expanded card must load on demand even if usage was populated before
+    // the stats panel mounted; collapsed cards make no stats requests.
+    void loadStats();
+  }, [accountId, enabled, loadStats, open]);
 
   useEffect(() => {
     const usageChanged = usage !== lastObservedUsage.current;
