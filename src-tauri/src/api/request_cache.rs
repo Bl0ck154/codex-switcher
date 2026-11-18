@@ -104,6 +104,7 @@ struct Entry {
 #[derive(Default)]
 struct State {
     epoch: u64,
+    critical_switches: usize,
     entries: HashMap<Key, Entry>,
     flights: HashMap<Key, Arc<AsyncMutex<()>>>,
     metadata: HashMap<String, (Instant, ChatGptAccountMetadata)>,
@@ -127,6 +128,19 @@ pub struct CacheMetrics {
     pub joined_flights: u64,
     pub fetches: u64,
     pub outbound_requests: u64,
+}
+
+/// Keeps quota readers blocked until the critical account switch exits.
+pub struct CriticalSwitchGuard<'a> {
+    cache: &'a RequestCache,
+}
+
+impl Drop for CriticalSwitchGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.cache.state();
+        state.critical_switches = state.critical_switches.saturating_sub(1);
+        RequestCache::clear_generation(&mut state);
+    }
 }
 
 impl RequestCache {
@@ -223,12 +237,22 @@ impl RequestCache {
         );
     }
 
-    pub fn invalidate(&self) {
-        let mut state = self.state();
+    fn clear_generation(state: &mut State) {
         state.epoch = state.epoch.wrapping_add(1);
         state.entries.clear();
         state.flights.clear();
         state.metadata.clear();
+    }
+
+    pub fn invalidate(&self) {
+        Self::clear_generation(&mut self.state());
+    }
+
+    pub fn begin_critical_switch(&self) -> CriticalSwitchGuard<'_> {
+        let mut state = self.state();
+        state.critical_switches += 1;
+        Self::clear_generation(&mut state);
+        CriticalSwitchGuard { cache: self }
     }
 
     pub fn metrics(&self) -> CacheMetrics {
@@ -266,6 +290,9 @@ impl RequestCache {
         let (flight, epoch) = {
             let mut state = self.state();
             Self::prune(&mut state);
+            if state.critical_switches > 0 {
+                return Err(anyhow!("Account switching; retry quota after switch"));
+            }
             if let Some(value) = Self::lookup(&mut state, &key) {
                 return Ok(value);
             }
@@ -290,7 +317,7 @@ impl RequestCache {
         let _flight_guard = flight.lock().await;
         {
             let mut state = self.state();
-            if state.epoch != epoch {
+            if state.epoch != epoch || state.critical_switches > 0 {
                 return Err(anyhow!(
                     "Account data changed while request was queued; retry"
                 ));
@@ -305,7 +332,7 @@ impl RequestCache {
         let mut state = self.state();
         // Switch, OAuth rotation, warm-up, and resets invalidate the entire
         // generation. Never publish or cache a response from an older one.
-        if state.epoch != epoch {
+        if state.epoch != epoch || state.critical_switches > 0 {
             return Err(anyhow!("Account data changed during request; retry"));
         }
         if let Ok(ref value) = result {
@@ -356,6 +383,10 @@ impl RequestCache {
 
 pub fn invalidate_all() {
     CACHE.invalidate();
+}
+
+pub fn begin_critical_switch() -> CriticalSwitchGuard<'static> {
+    CACHE.begin_critical_switch()
 }
 
 pub fn metrics() -> CacheMetrics {
@@ -532,6 +563,38 @@ mod tests {
         assert!(cache.metrics().cache_bytes_estimate < MAX_CACHE_BYTES);
         tokio::time::sleep(Duration::from_millis(10)).await;
         assert_eq!(cache.metrics().cache_entries, 0);
+    }
+
+    #[tokio::test]
+    async fn critical_switch_rejects_cached_reads_without_new_requests() {
+        let cache = RequestCache::default();
+        let a = account("token-a");
+        cache
+            .get_or_fetch(&a, Endpoint::Usage, USAGE_TTL, |_| true, || async {
+                Ok::<_, anyhow::Error>(1usize)
+            })
+            .await
+            .unwrap();
+        let guard = cache.begin_critical_switch();
+        let calls = AtomicUsize::new(0);
+        let result = cache
+            .get_or_fetch(&a, Endpoint::Usage, USAGE_TTL, |_| true, || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, anyhow::Error>(2usize)
+            })
+            .await;
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        drop(guard);
+        assert_eq!(
+            cache
+                .get_or_fetch(&a, Endpoint::Usage, USAGE_TTL, |_| true, || async {
+                    Ok::<_, anyhow::Error>(3usize)
+                })
+                .await
+                .unwrap(),
+            3
+        );
     }
 
     #[tokio::test]
