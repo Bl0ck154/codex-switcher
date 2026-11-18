@@ -170,9 +170,7 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
         &fresh_account,
         Endpoint::Usage,
         request_cache::USAGE_TTL,
-        |value: &UsageAttempt| {
-            matches!(value, UsageAttempt::Ready(usage) if usage.error.is_none())
-        },
+        |value: &UsageAttempt| matches!(value, UsageAttempt::Ready(usage) if usage.error.is_none()),
         || send_usage_attempt(&fresh_account),
     )
     .await?;
