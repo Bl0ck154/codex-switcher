@@ -70,14 +70,21 @@ pub async fn refresh_account_metadata(account_id: String) -> Result<AccountInfo,
             .await
             .map_err(|e| e.to_string())?;
 
-            update_account_metadata(
-                &account_id,
-                None,
-                None,
-                live_metadata.plan_type.clone(),
-                None,
-            )
-            .map_err(|e| e.to_string())?;
+            // Avoid a redundant account-store write on each metadata poll.
+            // Every write invalidates quota caches, so unchanged plan metadata
+            // must not trigger additional quota network requests.
+            if live_metadata.plan_type.as_ref().is_some_and(|plan| {
+                refreshed.plan_type.as_deref() != Some(plan.as_str())
+            }) {
+                update_account_metadata(
+                    &account_id,
+                    None,
+                    None,
+                    live_metadata.plan_type.clone(),
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            }
 
             // Store updates invalidate the old generation. Re-seed only after
             // successful persistence, so AccountInfo can display fresh expiry.
