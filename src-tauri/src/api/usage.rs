@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-use crate::auth::{ensure_chatgpt_tokens_fresh, refresh_chatgpt_tokens};
 use super::request_cache::{self, Endpoint};
+use crate::auth::{ensure_chatgpt_tokens_fresh, refresh_chatgpt_tokens};
 use crate::types::{
     AuthData, CreditStatusDetails, LunaReserveInfo, RateLimitDetails, RateLimitStatusPayload,
     RateLimitWindow, StoredAccount, UsageInfo,
@@ -90,8 +90,9 @@ pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
                 request_cache::USAGE_TTL,
                 |usage: &UsageInfo| usage.error.is_none(),
                 || get_usage_with_chatgpt_auth(account),
-            ).await
-        },
+            )
+            .await
+        }
     }
 }
 
