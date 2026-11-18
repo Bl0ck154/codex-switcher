@@ -29,6 +29,9 @@ const PROCESS_COMMAND_LINE_INFORMATION: i32 = 60; // Windows 8.1+
 const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004u32 as i32;
 const MAX_COMMAND_LINE_BYTES: usize = 128 * 1024;
 const ERROR_INVALID_PARAMETER: i32 = 87;
+const ERROR_NO_MORE_FILES: i32 = 18;
+const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023u32 as i32;
+const STATUS_BUFFER_OVERFLOW: i32 = 0x8000_0005u32 as i32;
 
 #[link(name = "ntdll")]
 extern "system" {
@@ -82,6 +85,10 @@ fn candidates() -> anyhow::Result<Vec<(u32, u32, String)>> {
             found.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
         }
         if unsafe { Process32NextW(snapshot, &mut entry) } == 0 {
+            let err = io::Error::last_os_error();
+            if err.raw_os_error() != Some(ERROR_NO_MORE_FILES) {
+                return Err(err).context("Toolhelp process enumeration stopped unexpectedly");
+            }
             break;
         }
     }
@@ -137,6 +144,14 @@ fn open_query_process(pid: u32) -> anyhow::Result<Option<OwnedHandle>> {
     Ok(Some(OwnedHandle(handle)))
 }
 
+fn exited(handle: HANDLE) -> anyhow::Result<bool> {
+    match unsafe { WaitForSingleObject(handle, 0) } {
+        0 => Ok(true), // WAIT_OBJECT_0
+        WAIT_TIMEOUT => Ok(false),
+        _ => Err(io::Error::last_os_error()).context("WaitForSingleObject failed"),
+    }
+}
+
 fn executable_path(handle: HANDLE) -> anyhow::Result<String> {
     let mut path = vec![0u16; 32768];
     let mut len = path.len() as u32;
@@ -170,7 +185,7 @@ fn command_line(handle: HANDLE) -> anyhow::Result<String> {
                 &mut required,
             )
         };
-        if status == STATUS_INFO_LENGTH_MISMATCH {
+        if matches!(status, STATUS_INFO_LENGTH_MISMATCH | STATUS_BUFFER_TOO_SMALL | STATUS_BUFFER_OVERFLOW) {
             requested = (required as usize).max(capacity * 2);
             continue;
         }
@@ -207,12 +222,12 @@ pub(super) fn read() -> anyhow::Result<Vec<WindowsCodexProcess>> {
             continue;
         };
         // A handle also prevents PID reuse while inspecting this candidate.
-        if unsafe { WaitForSingleObject(handle.0, 0) } != WAIT_TIMEOUT {
+        if exited(handle.0)? {
             continue;
         }
         let path = match executable_path(handle.0) {
             Ok(path) => path,
-            Err(_error) if unsafe { WaitForSingleObject(handle.0, 0) } != WAIT_TIMEOUT => {
+            Err(_error) if exited(handle.0).unwrap_or(false) => {
                 continue; // Exited while inspecting.
             }
             Err(error) => return Err(error),
@@ -229,7 +244,7 @@ pub(super) fn read() -> anyhow::Result<Vec<WindowsCodexProcess>> {
         }
         let command = match command_line(handle.0) {
             Ok(command) => command,
-            Err(_error) if unsafe { WaitForSingleObject(handle.0, 0) } != WAIT_TIMEOUT => {
+            Err(_error) if exited(handle.0).unwrap_or(false) => {
                 continue; // Exited while querying the command line.
             }
             Err(error) => return Err(error),
@@ -251,7 +266,7 @@ pub(super) fn read() -> anyhow::Result<Vec<WindowsCodexProcess>> {
 
 pub(super) fn command_line_for_pid(pid: u32) -> Option<String> {
     let handle = open_query_process(pid).ok()??;
-    if unsafe { WaitForSingleObject(handle.0, 0) } != WAIT_TIMEOUT {
+    if exited(handle.0).ok()? {
         return None;
     }
     command_line(handle.0).ok()
