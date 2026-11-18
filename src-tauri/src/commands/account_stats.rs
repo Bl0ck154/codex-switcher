@@ -224,7 +224,9 @@ pub async fn get_account_usage_stats(account_id: String) -> Result<AccountUsageS
         ));
     }
 
-    fetch_profile_usage(account).await.map_err(|e| e.to_string())
+    fetch_profile_usage(account)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // Keep a 401 outside the cached result. A token rotation persists new
