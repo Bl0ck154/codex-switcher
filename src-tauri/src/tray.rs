@@ -76,7 +76,7 @@ fn defer_menu_refresh(last_click: Option<Instant>, now: Instant) -> bool {
         .is_some_and(|start| now.saturating_duration_since(start) < TRAY_MENU_INTERACTION_GRACE)
 }
 
-const TRAY_ID: &str = "codex-switcher-tray";
+pub const TRAY_ID: &str = "codex-switcher-tray";
 const TRAY_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/tray.png");
 const TRAY_REFRESH_EVENT: &str = "tray-refresh";
 const ACCOUNTS_CHANGED_EVENT: &str = "accounts-changed";

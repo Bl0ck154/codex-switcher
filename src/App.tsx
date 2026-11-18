@@ -960,6 +960,56 @@ function App() {
     },
   });
 
+
+  // Releasing a Windows WebView2 is safe only when the current page has no
+  // pending user action or React-owned background automation. Backend tray
+  // polling stays alive; auto-switch and warm-up remain unchanged.
+  useEffect(() => {
+    if (!isTauriRuntime() || typeof navigator === "undefined" ||
+        !/Windows/i.test(navigator.userAgent)) return;
+    const idle =
+      !autoSwitchEnabled &&
+      !autoWarmupAllEnabled &&
+      autoWarmupAccountIds.size === 0 &&
+      !timedWarmupEnabled &&
+      !autoSwitcher.busy &&
+      autoWarmupRunningIds.size === 0 &&
+      !timedWarmupRunning &&
+      !loading &&
+      !switchingId &&
+      !warmingUpId &&
+      !isRefreshing &&
+      !isWarmingAll &&
+      !isOpeningCodex &&
+      !isImportingSlim &&
+      !isImportingFull &&
+      !isExportingSlim &&
+      !isExportingFull &&
+      !isCompletingForceClose &&
+      !isForceClosingCodex &&
+      !isAddModalOpen &&
+      !reloginAccount &&
+      !isConfigModalOpen &&
+      !isSettingsOpen &&
+      !pendingSwitchAccountId &&
+      !forceCloseConfirmOpen &&
+      !closeBehaviorPromptOpen &&
+      recoveryState?.status !== "running";
+
+    void invokeBackend("report_main_hibernation_state", { idle })
+      .catch((error) => console.warn("Could not update WebView hibernation state:", error));
+  }, [
+    autoSwitchEnabled, autoWarmupAllEnabled, autoWarmupAccountIds.size,
+    timedWarmupEnabled, autoSwitcher.busy, autoWarmupRunningIds.size,
+    timedWarmupRunning, loading, switchingId, warmingUpId,
+    isRefreshing, isWarmingAll, isOpeningCodex, isImportingSlim,
+    isImportingFull, isExportingSlim, isExportingFull,
+    isCompletingForceClose, isForceClosingCodex, isAddModalOpen,
+    reloginAccount, isConfigModalOpen, isSettingsOpen,
+    pendingSwitchAccountId, forceCloseConfirmOpen, closeBehaviorPromptOpen,
+    recoveryState?.status,
+  ]);
+
   const saveAutoSwitchEnabled = (enabled: boolean) => {
     try {
       window.localStorage.setItem(AUTO_SWITCH_STORAGE_KEY, String(enabled));

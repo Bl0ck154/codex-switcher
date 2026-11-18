@@ -7,6 +7,8 @@ pub mod auth;
 pub mod commands;
 #[cfg(desktop)]
 pub mod tray;
+#[cfg(target_os = "windows")]
+pub mod windows_hibernate;
 pub mod types;
 pub mod web;
 
@@ -116,6 +118,7 @@ pub fn run() {
             open_main_window,
             quit_app,
             report_usage,
+            commands::report_main_hibernation_state,
             get_dock_display_mode,
             set_dock_display_mode,
             complete_close_behavior,
@@ -124,6 +127,14 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|_app, _event| {
+            #[cfg(target_os = "windows")]
+            if let tauri::RunEvent::ExitRequested { api, .. } = _event {
+                // Releasing the last WebView2 must not exit the native tray.
+                // Explicit Quit calls AppHandle::exit.
+                if _app.tray_by_id(crate::tray::TRAY_ID).is_some() {
+                    api.prevent_exit();
+                }
+            }
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Reopen { .. } = _event {
                 commands::restore_main_window(_app);

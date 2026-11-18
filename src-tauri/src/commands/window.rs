@@ -46,6 +46,15 @@ pub fn hide_tray_window(app: AppHandle) {
     }
 }
 
+/// A positive handshake only when no React background work requires this WebView.
+#[tauri::command]
+pub fn report_main_hibernation_state(app: AppHandle, idle: bool) {
+    #[cfg(target_os = "windows")]
+    crate::windows_hibernate::report_frontend_idle(&app, idle);
+    #[cfg(not(target_os = "windows"))]
+    let _ = (app, idle);
+}
+
 /// Bring the main window to the foreground and hide the tray popup.
 #[tauri::command]
 pub fn open_main_window(app: AppHandle) {
@@ -57,6 +66,8 @@ pub fn hide_main_window<R: Runtime>(app: &AppHandle<R>) {
         if window.hide().is_ok() {
             #[cfg(target_os = "windows")]
             crate::tray::main_window_memory_target(app, true);
+            #[cfg(target_os = "windows")]
+            crate::windows_hibernate::main_hidden(app);
         }
     }
     #[cfg(target_os = "macos")]
@@ -95,9 +106,13 @@ pub fn restore_main_window<R: Runtime>(app: &AppHandle<R>) {
             crate::tray::popup_hidden(app);
         }
     }
-    if let Some(window) = app.get_webview_window("main") {
-        #[cfg(target_os = "windows")]
+    #[cfg(target_os = "windows")]
+    {
         crate::tray::main_window_memory_target(app, false);
+        crate::windows_hibernate::show_or_create(app);
+    }
+    #[cfg(not(target_os = "windows"))]
+    if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
