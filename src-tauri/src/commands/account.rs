@@ -217,9 +217,9 @@ async fn switch_account_checked(
     let already_active = store.active_account_id.as_deref() == Some(account_id);
 
     ensure_codex_not_running()?;
-    // A switch is critical even if the selected account is unchanged.
-    // Retire quota snapshots before any asynchronous auth/file operations.
-    crate::api::request_cache::invalidate_all();
+    // Block stale quota reads for the entire switch, including token refresh
+    // and daemon shutdown. RAII also restores reads on early errors.
+    let _quota_switch_guard = crate::api::request_cache::begin_critical_switch();
 
     // The CLI daemon keeps the account it loaded at start. Stop it before
     // auth.json changes; the next CLI session starts a new daemon.
