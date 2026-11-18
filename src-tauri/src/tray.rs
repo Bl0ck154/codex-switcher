@@ -30,6 +30,15 @@ static TRAY_RIGHT_CLICK_AT: LazyLock<Mutex<Option<Instant>>> = LazyLock::new(|| 
 static LAST_TRAY_MENU: LazyLock<Mutex<Option<TrayMenuSignature>>> =
     LazyLock::new(|| Mutex::new(None));
 
+// A popup is optional on Windows. The native tray menu and backend pollers
+// remain active even while this WebView2 window does not exist.
+#[cfg(target_os = "windows")]
+static TRAY_POPUP_ACTIVITY_EPOCH: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+static TRAY_POPUP_INSTANCE_ID: AtomicU64 = AtomicU64::new(0);
+#[cfg(target_os = "windows")]
+const TRAY_POPUP_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
 // Windows' native TrackPopupMenu may be dismissed when set_menu or set_icon
 // is called while it is open. The icon click API has no menu-closed event, so
 // avoid mutating it during the short interaction window.
@@ -85,7 +94,8 @@ struct SwitchAccountBlockedPayload {
 }
 
 pub fn setup(app: &AppHandle) -> tauri::Result<()> {
-    #[cfg(not(target_os = "linux"))]
+    // macOS keeps its existing warm popup; Windows creates it on first click.
+    #[cfg(target_os = "macos")]
     create_tray_window(app)?;
 
     let menu = build_menu(app, &load_accounts().unwrap_or_default())?;
@@ -284,17 +294,96 @@ fn create_tray_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .visible(false)
         .build()?;
 
+    // A stale focus event must never hide a new window with the same label.
+    #[cfg(target_os = "windows")]
+    let instance_id = TRAY_POPUP_INSTANCE_ID.fetch_add(1, Ordering::AcqRel) + 1;
+
     // Hide the popup as soon as it loses focus so it behaves like a native menu.
     let app_handle = app.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Focused(false) = event {
+            #[cfg(target_os = "windows")]
+            if TRAY_POPUP_INSTANCE_ID.load(Ordering::Acquire) != instance_id {
+                return;
+            }
+
             if let Some(window) = app_handle.get_webview_window(TRAY_WINDOW) {
-                let _ = window.hide();
+                if window.is_visible().unwrap_or(false) && window.hide().is_ok() {
+                    #[cfg(target_os = "windows")]
+                    popup_hidden(&app_handle);
+                }
             }
         }
     });
 
     Ok(())
+}
+
+// Windows can release the popup after a short reuse window. Every hide gets a
+// new epoch; re-opening invalidates all pending idle timers. All destroy/create
+// decisions are serialized on Tauri's UI thread to avoid duplicate labels.
+#[cfg(target_os = "windows")]
+pub fn popup_hidden<R: Runtime>(app: &AppHandle<R>) {
+    let Some(window) = app.get_webview_window(TRAY_WINDOW) else {
+        return;
+    };
+
+    set_webview_memory_target(&window, true);
+    let epoch = TRAY_POPUP_ACTIVITY_EPOCH.fetch_add(1, Ordering::AcqRel) + 1;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(TRAY_POPUP_IDLE_TIMEOUT).await;
+        let ui_app = app.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            let current_epoch = TRAY_POPUP_ACTIVITY_EPOCH.load(Ordering::Acquire);
+            let Some(window) = ui_app.get_webview_window(TRAY_WINDOW) else {
+                return;
+            };
+            if should_evict_popup(epoch, current_epoch, window.is_visible().ok()) {
+                if let Err(error) = window.destroy() {
+                    eprintln!("Failed to release idle tray popup: {error}");
+                }
+            }
+        }) {
+            eprintln!("Failed to schedule idle tray popup release: {error}");
+        }
+    });
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn should_evict_popup(scheduled_epoch: u64, current_epoch: u64, visible: Option<bool>) -> bool {
+    scheduled_epoch == current_epoch && visible == Some(false)
+}
+
+// Available in the existing WebView2 COM bindings used by Tauri/Wry.
+// Best-effort: older runtimes without ICoreWebView2_19 simply skip this hint.
+// This does not suspend JavaScript (unlike TrySuspend) or touch the main window.
+#[cfg(target_os = "windows")]
+fn set_webview_memory_target<R: Runtime>(window: &tauri::WebviewWindow<R>, low: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    };
+    use windows::core::Interface;
+
+    let level = if low {
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+    } else {
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+    };
+    if let Err(error) = window.with_webview(move |webview| {
+        let Ok(core) = (unsafe { webview.controller().CoreWebView2() }) else {
+            return;
+        };
+        let Ok(extension) = core.cast::<ICoreWebView2_19>() else {
+            return;
+        };
+        if let Err(error) = unsafe { extension.SetMemoryUsageTargetLevel(level) } {
+            eprintln!("Failed to set tray WebView2 memory target: {error}");
+        }
+    }) {
+        eprintln!("Failed to access tray WebView2: {error}");
+    }
 }
 
 #[cfg_attr(target_os = "linux", allow(dead_code))]
@@ -320,6 +409,17 @@ fn handle_tray_icon_event<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, event: Tr
             if let Ok(mut last) = TRAY_RIGHT_CLICK_AT.lock() {
                 *last = None;
             }
+            #[cfg(target_os = "windows")]
+            {
+                let app = tray.app_handle().clone();
+                let ui_app = app.clone();
+                if let Err(error) = app.run_on_main_thread(move || {
+                    toggle_tray_window(&ui_app, position);
+                }) {
+                    eprintln!("Failed to handle tray popup click: {error}");
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
             toggle_tray_window(tray.app_handle(), position);
         }
         _ => {}
@@ -328,17 +428,40 @@ fn handle_tray_icon_event<R: Runtime>(tray: &tauri::tray::TrayIcon<R>, event: Tr
 
 #[cfg_attr(target_os = "linux", allow(dead_code))]
 fn toggle_tray_window<R: Runtime>(app: &AppHandle<R>, cursor: PhysicalPosition<f64>) {
+    #[cfg(target_os = "windows")]
+    if app.get_webview_window(TRAY_WINDOW).is_none() {
+        if let Err(error) = create_tray_window(app) {
+            // Keep an accessible UI even if WebView2 initialization fails.
+            eprintln!("Failed to lazily create tray popup: {error}");
+            show_main_window(app);
+            return;
+        }
+    }
+
     let Some(window) = app.get_webview_window(TRAY_WINDOW) else {
         return;
     };
 
     if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
+        if window.hide().is_ok() {
+            #[cfg(target_os = "windows")]
+            popup_hidden(app);
+        }
         return;
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        TRAY_POPUP_ACTIVITY_EPOCH.fetch_add(1, Ordering::AcqRel);
+        set_webview_memory_target(&window, false);
+    }
+
     position_near_cursor(&window, cursor);
-    let _ = window.show();
+    if let Err(error) = window.show() {
+        eprintln!("Failed to show tray popup: {error}");
+        show_main_window(app);
+        return;
+    }
     let _ = window.set_focus();
     let _ = app.emit_to(TRAY_WINDOW, TRAY_REFRESH_EVENT, ());
 }
@@ -819,6 +942,14 @@ mod tests {
             now + Duration::from_secs(20)
         ));
         assert!(!defer_menu_refresh(None, now));
+    }
+
+    #[test]
+    fn popup_idle_release_requires_same_epoch_and_confirmed_hidden_state() {
+        assert!(should_evict_popup(5, 5, Some(false)));
+        assert!(!should_evict_popup(5, 6, Some(false))); // reopened
+        assert!(!should_evict_popup(5, 5, Some(true))); // still open
+        assert!(!should_evict_popup(5, 5, None)); // visibility query failed
     }
 
     #[test]
