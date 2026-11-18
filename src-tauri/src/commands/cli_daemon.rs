@@ -102,6 +102,17 @@ mod tests {
     const RELEASE_BIN: &str =
         "/Users/me/.codex/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/bin/codex";
 
+    #[cfg(windows)]
+    #[test]
+    fn managed_windows_daemon_uses_exe_path() {
+        assert_eq!(
+            super::managed_codex_path(std::path::Path::new(r"C:\CodexHome"))
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("codex.exe")
+        );
+    }
+
     #[test]
     fn reads_the_pid_from_the_daemon_pid_file() {
         let contents = r#"{"pid":99744,"processStartTime":"Fri Oct  2 03:58:07 2026","processIdentity":{"uniqueId":10620751}}"#;
