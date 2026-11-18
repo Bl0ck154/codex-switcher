@@ -200,7 +200,9 @@ export function useAccounts() {
           prev.map((account) => {
             const usage = usageResults.get(account.id);
             if (!usage) return account;
-            const unchanged = sameUsage(account.usage, usage);
+            // Focused/manual refreshes still update the card's "Last updated"
+            // indicator. Hidden polling can reuse identical usage objects.
+            const unchanged = Boolean(options?.silent) && sameUsage(account.usage, usage);
             if (unchanged && account.usageLoading === false) return account;
             return {
               ...account,
