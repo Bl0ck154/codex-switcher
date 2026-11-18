@@ -10,9 +10,7 @@ use std::{
     time::Duration,
 };
 
-use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, Runtime, WebviewWindowBuilder,
-};
+use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Runtime, WebviewWindowBuilder};
 
 const HIBERNATE_AFTER: Duration = Duration::from_secs(90);
 static READY: AtomicBool = AtomicBool::new(false);
@@ -25,8 +23,7 @@ struct Geometry {
     position: PhysicalPosition<i32>,
     size: PhysicalSize<u32>,
 }
-static LAST_GEOMETRY: LazyLock<Mutex<Option<Geometry>>> =
-    LazyLock::new(|| Mutex::new(None));
+static LAST_GEOMETRY: LazyLock<Mutex<Option<Geometry>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Tauri command called after React has initialized its persisted settings.
 /// It is deliberately false until the UI can positively prove no background
@@ -35,8 +32,10 @@ pub fn report_frontend_idle<R: Runtime>(app: &AppHandle<R>, idle: bool) {
     READY.store(true, Ordering::Release);
     MAY_HIBERNATE.store(idle, Ordering::Release);
     EPOCH.fetch_add(1, Ordering::AcqRel);
-    if idle && app.get_webview_window("main")
-        .is_some_and(|window| window.is_visible().ok() == Some(false))
+    if idle
+        && app
+            .get_webview_window("main")
+            .is_some_and(|window| window.is_visible().ok() == Some(false))
     {
         schedule_hibernation(app);
     }

@@ -7,10 +7,10 @@ pub mod auth;
 pub mod commands;
 #[cfg(desktop)]
 pub mod tray;
-#[cfg(target_os = "windows")]
-pub mod windows_hibernate;
 pub mod types;
 pub mod web;
+#[cfg(target_os = "windows")]
+pub mod windows_hibernate;
 
 use commands::{
     ack_close_behavior_prompt, add_account_from_file, cancel_codex_session_recovery, cancel_login,
