@@ -217,6 +217,9 @@ async fn switch_account_checked(
     let already_active = store.active_account_id.as_deref() == Some(account_id);
 
     ensure_codex_not_running()?;
+    // A switch is critical even if the selected account is unchanged.
+    // Retire quota snapshots before any asynchronous auth/file operations.
+    crate::api::request_cache::invalidate_all();
 
     // The CLI daemon keeps the account it loaded at start. Stop it before
     // auth.json changes; the next CLI session starts a new daemon.
