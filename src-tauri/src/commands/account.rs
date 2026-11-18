@@ -216,7 +216,9 @@ async fn switch_account_checked(
     // instead of returning a false success.
     let already_active = store.active_account_id.as_deref() == Some(account_id);
 
-    ensure_codex_not_running()?;
+    tokio::task::spawn_blocking(ensure_codex_not_running)
+        .await
+        .map_err(|e| e.to_string())??;
 
     // The CLI daemon keeps the account it loaded at start. Stop it before
     // auth.json changes; the next CLI session starts a new daemon.
@@ -255,7 +257,9 @@ async fn switch_account_checked(
 
     // Token refresh may take time. Recheck immediately before touching auth.json;
     // the UI's cached/periodic status is never an authorization to switch.
-    ensure_codex_not_running()?;
+    tokio::task::spawn_blocking(ensure_codex_not_running)
+        .await
+        .map_err(|e| e.to_string())??;
 
     // Write to ~/.codex/auth.json
     switch_to_account(&account).map_err(|e| e.to_string())?;
