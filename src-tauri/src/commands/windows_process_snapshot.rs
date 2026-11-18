@@ -282,7 +282,7 @@ pub(super) fn process_exists(pid: u32) -> bool {
         return io::Error::last_os_error().raw_os_error() != Some(ERROR_INVALID_PARAMETER);
     }
     let handle = OwnedHandle(handle);
-    unsafe { WaitForSingleObject(handle.0, 0) } != 0 // WAIT_OBJECT_0 = 0
+    (unsafe { WaitForSingleObject(handle.0, 0) }) != 0 // WAIT_OBJECT_0 = 0
 }
 
 #[cfg(test)]
