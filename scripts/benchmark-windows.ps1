@@ -66,7 +66,8 @@ $rootCreated = ([datetime]$rootNode.CreationDate).ToUniversalTime()
 $startedAt = (Get-Date).ToUniversalTime()
 $seen = @{}
 $cpuHistory = @{}
-$previousTime = [ref]$null
+$previousTimeValue = $null
+$previousTime = [ref]$previousTimeValue
 $samples = New-Object 'System.Collections.Generic.List[object]'
 Write-Host ("Target: {0} PID={1}" -f $rootNode.Name,$rootPid)
 Write-Host 'Unique proven descendants only. External matched WebView2 candidates are excluded.' -ForegroundColor Yellow
