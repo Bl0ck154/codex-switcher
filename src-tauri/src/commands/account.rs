@@ -253,6 +253,10 @@ async fn switch_account_checked(
         .map_err(|e| e.to_string())?;
     let token_elapsed = switch_started.elapsed();
 
+    // Token refresh may take time. Recheck immediately before touching auth.json;
+    // the UI's cached/periodic status is never an authorization to switch.
+    ensure_codex_not_running()?;
+
     // Write to ~/.codex/auth.json
     switch_to_account(&account).map_err(|e| e.to_string())?;
 
