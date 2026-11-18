@@ -7,11 +7,12 @@ use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, USER_AGENT},
     StatusCode,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
 use crate::auth::{ensure_chatgpt_tokens_fresh, refresh_chatgpt_tokens};
+use super::request_cache::{self, Endpoint};
 use crate::types::{
     AuthData, CreditStatusDetails, LunaReserveInfo, RateLimitDetails, RateLimitStatusPayload,
     RateLimitWindow, StoredAccount, UsageInfo,
@@ -32,7 +33,7 @@ const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
 const SESSION_WINDOW_SECONDS: i32 = 5 * 60 * 60;
 const WEEKLY_WINDOW_SECONDS: i32 = 7 * 24 * 60 * 60;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatGptAccountMetadata {
     pub plan_type: Option<String>,
     pub subscription_expires_at: Option<DateTime<Utc>>,
@@ -82,16 +83,29 @@ pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
             credits_balance: None,
             error: Some("Usage info not available for API key accounts".to_string()),
         }),
-        AuthData::ChatGPT { .. } => get_usage_with_chatgpt_auth(account).await,
+        AuthData::ChatGPT { .. } => {
+            request_cache::get_or_fetch(
+                account,
+                Endpoint::Usage,
+                request_cache::USAGE_TTL,
+                |usage: &UsageInfo| usage.error.is_none(),
+                || get_usage_with_chatgpt_auth(account),
+            ).await
+        },
     }
 }
 
 /// Send a minimal authenticated request to warm up account traffic paths.
 pub async fn warmup_account(account: &StoredAccount) -> Result<()> {
-    match &account.auth_data {
+    // A warm-up can consume credits or affect quotas. Cache must not survive it,
+    // including failed/aborted warm-ups.
+    request_cache::invalidate_all();
+    let result = match &account.auth_data {
         AuthData::ApiKey { key } => warmup_with_api_key(key).await,
         AuthData::ChatGPT { .. } => warmup_with_chatgpt_auth(account).await,
-    }
+    };
+    request_cache::invalidate_all();
+    result
 }
 
 pub async fn fetch_chatgpt_account_metadata(
@@ -261,8 +275,9 @@ async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
 }
 
 async fn warmup_with_api_key(api_key: &str) -> Result<()> {
-    let client = reqwest::Client::new();
+    let client = request_cache::client();
     let payload = build_warmup_payload(false, true);
+    request_cache::record_outbound_request();
     let response = client
         .post(format!("{OPENAI_API}/responses"))
         .header(USER_AGENT, BROWSER_USER_AGENT)
@@ -398,13 +413,8 @@ async fn send_chatgpt_get_request(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Result<reqwest::Response> {
-    let client = reqwest::Client::new();
     let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
-
-    client
-        .get(url)
-        .headers(headers)
-        .send()
+    request_cache::send_get(url, headers)
         .await
         .with_context(|| format!("Failed to send GET request to {url}"))
 }
@@ -414,9 +424,10 @@ async fn send_chatgpt_warmup_request(
     chatgpt_account_id: Option<&str>,
     stream: bool,
 ) -> Result<reqwest::Response> {
-    let client = reqwest::Client::new();
+    let client = request_cache::client();
     let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
     let payload = build_warmup_payload(stream, false);
+    request_cache::record_outbound_request();
 
     client
         .post(CHATGPT_CODEX_RESPONSES_API)
