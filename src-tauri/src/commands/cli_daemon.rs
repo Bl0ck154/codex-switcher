@@ -26,8 +26,7 @@ pub(crate) fn is_cli_daemon_running() -> Option<bool> {
 /// Stop the managed CLI daemon so it cannot keep the previous account.
 /// The next CLI session starts a new daemon from its own environment.
 /// Returns false when no daemon is running.
-pub(crate) fn stop_cli_daemon_if_running() -> anyhow::Result<bool> {
-    let codex_home = get_codex_home()?;
+pub(crate) fn stop_cli_daemon_if_running(codex_home: PathBuf) -> anyhow::Result<bool> {
     if running_daemon_pid(&codex_home).is_none() {
         return Ok(false);
     }
