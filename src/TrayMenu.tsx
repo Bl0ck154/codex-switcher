@@ -137,6 +137,7 @@ function TrayMenu() {
   const [dockDisplayMode, setDockDisplayMode] = useState<DockDisplayMode | null>(null);
   const usageGeneration = useRef(0);
   const statsGeneration = useRef(0);
+  const trayActive = useRef(false);
 
   // Limit concurrent auth-bound usage calls. One state update per small
   // batch avoids a whole tray re-render for each account response.
@@ -234,6 +235,7 @@ function TrayMenu() {
     try {
       void loadDockDisplayMode();
       const list = await invokeBackend<AccountInfo[]>("list_accounts");
+      if (!trayActive.current) return;
       setAccounts(list);
       setUsageById((prev) => retainUsageForAccounts(prev, list));
       setError(null);
@@ -303,6 +305,17 @@ function TrayMenu() {
     let unlistenTheme: (() => void) | undefined;
     let unlistenAutoWarmup: (() => void) | undefined;
 
+    const markHidden = () => {
+      trayActive.current = false;
+      usageGeneration.current += 1;
+      statsGeneration.current += 1;
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") markHidden();
+    };
+    window.addEventListener("blur", markHidden);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
     void (async () => {
       const { listen } = await import("@tauri-apps/api/event");
       const subscriptions: Array<() => void> = [];
@@ -311,18 +324,27 @@ function TrayMenu() {
         callback: (event: { payload: T }) => void,
       ): Promise<() => void> => {
         const unsubscribe = await listen<T>(name, callback);
-        subscriptions.push(unsubscribe);
-        return unsubscribe;
+        let closed = false;
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          unsubscribe();
+        };
+        subscriptions.push(close);
+        return close;
       };
 
       try {
         unlistenRefresh = await register(TRAY_REFRESH_EVENT, () => {
+          trayActive.current = true;
           syncThemeFromStorage();
           setAutoWarmupAllEnabled(readAutoWarmupAllEnabled());
           void load();
         });
         if (disposed) return;
-        unlistenChanged = await register(ACCOUNTS_CHANGED_EVENT, () => void load());
+        unlistenChanged = await register(ACCOUNTS_CHANGED_EVENT, () => {
+          if (trayActive.current) void load();
+        });
         if (disposed) return;
         unlistenTheme = await register<ThemeMode>(THEME_CHANGED_EVENT, ({ payload }) => {
           if (payload === "light" || payload === "dark") applyTheme(payload);
@@ -343,6 +365,8 @@ function TrayMenu() {
       disposed = true;
       usageGeneration.current += 1;
       statsGeneration.current += 1;
+      window.removeEventListener("blur", markHidden);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       unlistenRefresh?.();
       unlistenChanged?.();
       unlistenTheme?.();
