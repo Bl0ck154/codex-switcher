@@ -37,6 +37,8 @@ static TRAY_POPUP_ACTIVITY_EPOCH: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "windows")]
 static TRAY_POPUP_INSTANCE_ID: AtomicU64 = AtomicU64::new(0);
 #[cfg(target_os = "windows")]
+static MAIN_WEBVIEW_LOW: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "windows")]
 const TRAY_POPUP_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 // Windows' native TrackPopupMenu may be dismissed when set_menu or set_icon
@@ -355,9 +357,21 @@ fn should_evict_popup(scheduled_epoch: u64, current_epoch: u64, visible: Option<
     scheduled_epoch == current_epoch && visible == Some(false)
 }
 
+// Best-effort reduced-memory mode for the hidden/minimized main window.
+// Background Rust polling, menu events and Tauri commands keep running.
+#[cfg(target_os = "windows")]
+pub fn main_window_memory_target<R: Runtime>(app: &AppHandle<R>, low: bool) {
+    if MAIN_WEBVIEW_LOW.swap(low, Ordering::AcqRel) == low {
+        return;
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        set_webview_memory_target(&window, low);
+    }
+}
+
 // Available in the existing WebView2 COM bindings used by Tauri/Wry.
 // Best-effort: older runtimes without ICoreWebView2_19 simply skip this hint.
-// This does not suspend JavaScript (unlike TrySuspend) or touch the main window.
+// This does not suspend JavaScript (unlike TrySuspend).
 #[cfg(target_os = "windows")]
 fn set_webview_memory_target<R: Runtime>(window: &tauri::WebviewWindow<R>, low: bool) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -379,10 +393,10 @@ fn set_webview_memory_target<R: Runtime>(window: &tauri::WebviewWindow<R>, low: 
             return;
         };
         if let Err(error) = unsafe { extension.SetMemoryUsageTargetLevel(level) } {
-            eprintln!("Failed to set tray WebView2 memory target: {error}");
+            eprintln!("Failed to set WebView2 memory target: {error}");
         }
     }) {
-        eprintln!("Failed to access tray WebView2: {error}");
+        eprintln!("Failed to access WebView2: {error}");
     }
 }
 
