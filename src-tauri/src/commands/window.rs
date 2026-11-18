@@ -49,6 +49,7 @@ pub fn hide_tray_window(app: AppHandle) {
 /// Persist the React warm-up settings and reconcile the native ledger.
 #[tauri::command]
 pub async fn sync_windows_warmup_settings(
+    auto_switch_enabled: bool,
     auto_warmup_all_enabled: bool,
     auto_warmup_account_ids: Vec<String>,
     auto_warmup_ledger: std::collections::HashMap<String, crate::types::NativeWarmupHistory>,
@@ -59,6 +60,7 @@ pub async fn sync_windows_warmup_settings(
     #[cfg(target_os = "windows")]
     {
         crate::windows_background::sync_from_frontend(
+            auto_switch_enabled,
             auto_warmup_all_enabled,
             auto_warmup_account_ids,
             auto_warmup_ledger,
@@ -71,6 +73,7 @@ pub async fn sync_windows_warmup_settings(
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (
+            auto_switch_enabled,
             auto_warmup_all_enabled,
             auto_warmup_account_ids,
             auto_warmup_ledger,

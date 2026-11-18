@@ -22,6 +22,19 @@ const AUTO_USAGE_INTERVAL: Duration = Duration::from_secs(60);
 const MIN_SUCCESS_INTERVAL_MS: i64 = 60 * 60 * 1000;
 const FULL_WINDOW_SLACK_MINUTES: i64 = 5;
 const FULL_LIMIT: f64 = 99.5;
+const AUTO_SWITCH_WAKE_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+
+fn quota_exhausted(usage: &UsageInfo) -> bool {
+    if usage.error.is_some()
+        || usage.unlimited_credits == Some(true)
+        || usage.has_credits == Some(true)
+    {
+        return false;
+    }
+    usage.primary_used_percent.is_some_and(|used| used.is_finite() && used >= 100.0)
+        || usage.secondary_used_percent.is_some_and(|used| used.is_finite() && used >= 100.0)
+}
+
 
 fn merge_history(
     stored: &mut HashMap<String, NativeWarmupHistory>,
@@ -55,6 +68,7 @@ fn date_parts(s: &str) -> Option<(i32, u32, u32)> {
 /// Called on every UI config/ledger change and once on each cold WebView start.
 /// Previously recorded native activity always wins over stale localStorage.
 pub async fn sync_from_frontend(
+    auto_switch_enabled: bool,
     auto_warmup_all_enabled: bool,
     auto_warmup_account_ids: Vec<String>,
     auto_warmup_ledger: HashMap<String, NativeWarmupHistory>,
@@ -66,6 +80,7 @@ pub async fn sync_from_frontend(
     mutate_app_settings(|settings| {
         let target = &mut settings.windows_background_warmup;
         target.initialized = true;
+        target.auto_switch_enabled = auto_switch_enabled;
         target.auto_warmup_all_enabled = auto_warmup_all_enabled;
         target.auto_warmup_account_ids = auto_warmup_account_ids;
         target.timed_warmup_enabled = timed_warmup_enabled;
@@ -110,6 +125,7 @@ pub async fn change_all_enabled(enabled: bool) -> Result<(), String> {
 pub fn setup(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut last_auto: Option<Instant> = None;
+        let mut last_auto_switch_wake: Option<Instant> = None;
         loop {
             tokio::time::sleep(CHECK_INTERVAL).await;
             // Don't run alongside React or before its localStorage settings
@@ -124,6 +140,26 @@ pub fn setup(app: AppHandle) {
             }
             if let Err(error) = run_tick(&app, auto_due).await {
                 eprintln!("[NativeWarmup] Background tick failed: {error}");
+            }
+            // Wake React only when its full Codex close/reopen/session-recovery
+            // workflow may be required. The native tray already polls usage,
+            // so this monitor never adds network requests.
+            if last_auto_switch_wake.is_none_or(|at| at.elapsed() >= AUTO_SWITCH_WAKE_COOLDOWN) {
+                if let Ok(settings) = load_app_settings() {
+                    let background = settings.windows_background_warmup;
+                    if background.initialized && background.auto_switch_enabled
+                        && app.get_webview_window("main").is_none() {
+                        if let Ok(store) = load_accounts() {
+                            if let Some(id) = store.active_account_id {
+                                if crate::tray::fresh_usage_for_auto_switch(&id)
+                                    .as_ref().is_some_and(quota_exhausted) {
+                                    last_auto_switch_wake = Some(Instant::now());
+                                    crate::windows_hibernate::show_or_create(&app);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     });

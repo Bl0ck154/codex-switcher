@@ -54,6 +54,7 @@ pub struct NativeWarmupHistory {
 #[serde(default, rename_all = "camelCase")]
 pub struct NativeBackgroundWarmup {
     pub initialized: bool,
+    pub auto_switch_enabled: bool,
     pub auto_warmup_all_enabled: bool,
     pub auto_warmup_account_ids: Vec<String>,
     pub auto_warmup_ledger: std::collections::HashMap<String, NativeWarmupHistory>,

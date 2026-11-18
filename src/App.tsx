@@ -980,6 +980,7 @@ function App() {
       autoWarmupLedger: AutoWarmupLedger;
       timedWarmupLedger: Record<string, string>;
     }>("sync_windows_warmup_settings", {
+      autoSwitchEnabled,
       autoWarmupAllEnabled,
       autoWarmupAccountIds: Array.from(autoWarmupAccountIds),
       autoWarmupLedger,
@@ -1024,7 +1025,7 @@ function App() {
       }
     });
   }, [
-    autoWarmupAllEnabled, autoWarmupAccountIds, autoWarmupLedger,
+    autoSwitchEnabled, autoWarmupAllEnabled, autoWarmupAccountIds, autoWarmupLedger,
     timedWarmupEnabled, timedWarmupTimes, timedLedgerVersion,
   ]);
 
@@ -1036,7 +1037,6 @@ function App() {
         !/Windows/i.test(navigator.userAgent)) return;
     const idle =
       nativeWarmupReady &&
-      !autoSwitchEnabled &&
       !autoSwitcher.busy &&
       autoWarmupRunningIds.size === 0 &&
       !timedWarmupRunning &&
